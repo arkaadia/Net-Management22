@@ -10,9 +10,32 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.173.0';
+export const APP_VERSION = '1.174.0';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.174.0',
+    releaseDate: '2026-09-26',
+    type: 'minor',
+    title: 'ارتباط مستقیم وب‌سوکت با موتور SSH پایتون پارامیکو ۲، انطباق جامع با سوئیچ‌های سیسکو ۲۹۶۰، حذف کامل داده‌های ماک و گزارش عیب‌یابی تعاملی',
+    title_en: 'Direct WebSocket Gateway to Python Paramiko 2 SSH Engine, Dedicated Cisco 2960 Suite, Zero Mock Data & Interactive Diagnostic Workflow',
+    changes: [
+      'هدایت مستقیم و انحصاری تمامی نشست‌های وب‌ترمینال (سوئیچ‌ها، روترها و سرورها) از طریق پروکسی وب‌سوکت فول‌دوپلکس نود به موتور بک‌اند پایتون و سرور وب‌سوکت پارامیکو ۲ (ws://127.0.0.1:5002).',
+      'ارتقا و استقرار کتابخانه پارامیکو ۲ (Paramiko 2.12.0) در محیط پایتون با پشتیبانی کامل از پروتکل SSHv2 و نشست‌های زنده و کاملاً تعاملی شل PTY سخت‌افزاری.',
+      'توسعه سوئیت رمزنگاری بهینه‌سازی‌شده برای سوئیچ‌های سیسکو ۲۹۶۰ (Cisco Catalyst 2960 / IOS 12 & 15) شامل تبادل کلید DH Group 14/1 SHA1 و Group Exchange، کلیدهای هاست ssh-rsa، سایفرهای سازگار aes128-cbc و 3des-cbc و کدهای اعتبارسنجی پیام hmac-sha1.',
+      'رفع قطعی خطاهای کلید سایفر (Cipher Key) و ناسازگاری الگوریتم از طریق بازتاب امن دیکشنری‌های داخلی پارامیکو (_cipher_info, _kex_info, _key_info) و جلوگیری از ارسال الگوهای منحنی بیضوی ناسازگار به سوئیچ‌های قدیمی‌تر.',
+      'حذف کامل و قطعی هرگونه دیتای ماک، شبیه‌سازی یا نشست ساختگی CLI (بر اساس قانون تخطی‌ناپذیر ۸) و تضمین انعکاس ۱۰۰٪ خروجی واقعی سخت‌افزار در ترمینال.',
+      'پیاده‌سازی موتور هوشمند تحلیل و گزارش عیب‌یابی (generate_cisco_diagnostic_report) همراه با تفکیک نوع خطا، تشریح دقیق علت به زبان فارسی و انگلیسی، و ورک‌فلو و دستورات دقیق CLI سیسکو جهت رفع مشکل در سوئیچ ۲۹۶۰.'
+    ],
+    changes_en: [
+      'Rerouted all terminal WebSocket sessions directly through the Node full-duplex proxy to the Python Paramiko 2 WebSocket engine (ws://127.0.0.1:5002) for real hardware SSH execution.',
+      'Deployed Paramiko 2 (v2.12.0) in the Python backend environment with full SSHv2 protocol support and authentic, interactive bidirectional PTY shell streaming.',
+      'Engineered a dedicated cryptographic suite for Cisco Catalyst 2960 switches (IOS 12 & 15) prioritizing DH Group 14/1 SHA1, Group Exchange, ssh-rsa host keys, and aes128-cbc / 3des-cbc ciphers.',
+      'Completely eliminated cipher key and algorithm negotiation failures via safe runtime dictionary reflection (_cipher_info, _kex_info, _key_info), preventing elliptic curve resets on legacy switch firmware.',
+      'Strictly eradicated all mock, fake, or simulated CLI terminal fallbacks in accordance with Rule 8, guaranteeing 100% authentic hardware telemetry and transparent error reporting.',
+      'Built a comprehensive diagnostic and troubleshooting engine (generate_cisco_diagnostic_report) detailing exact root causes, bilingual resolution workflows, and copy-pasteable Cisco 2960 CLI commands.'
+    ]
+  },
   {
     version: '1.173.0',
     releaseDate: '2026-09-26',

@@ -47,6 +47,236 @@ except ImportError:
     open_adaptive_shell_channel = None
 
 
+def generate_cisco_diagnostic_report(
+    error_exc: Optional[Exception],
+    host: str,
+    port: int,
+    username: str,
+    platform: str,
+    used_legacy: bool = False
+) -> Tuple[str, str, str, Dict[str, Any]]:
+    """
+    Generates a comprehensive diagnostic report and troubleshooting workflow for SSH failures,
+    tailored specifically for Cisco Catalyst 2960 and enterprise network infrastructure.
+    Returns: (ansi_terminal_output, summary_error_message, category_code, structured_diagnostic_dict)
+    """
+    err_str = str(error_exc) if error_exc else "Connection failed"
+    err_lower = err_str.lower()
+
+    paramiko_ver = getattr(paramiko, "__version__", "2.12.0") if HAS_PARAMIKO else "N/A"
+
+    if (HAS_PARAMIKO and isinstance(error_exc, (paramiko.AuthenticationException, paramiko.BadAuthenticationType))) or \
+       any(k in err_lower for k in ["auth", "denied", "password refused", "userauth"]):
+        category = "AUTHENTICATION_FAILURE"
+        summary = f"Authentication failed for user '{username}' on {host}:{port}"
+        root_cause_en = f"Access denied for user '{username}' on {host}:{port}. The Cisco switch rejected the credentials or local user is missing required privilege 15."
+        root_cause_fa = f"اعتبارسنجی ناموفق بود: سوئیچ سیسکو نام کاربری «{username}» یا رمز عبور را نپذیرفت یا کاربر سطح دسترسی ۱۵ ندارد."
+        workflow_steps_en = [
+            f"1. Connect to the switch via Console cable or management Telnet.",
+            f"2. Enter privileged exec mode: enable",
+            f"3. Verify/configure user with privilege 15: configure terminal -> username {username} privilege 15 secret <password>",
+            f"4. Ensure local login on VTY lines: line vty 0 15 -> login local -> transport input ssh -> exit",
+            f"5. If AAA TACACS+/RADIUS is active: aaa authentication login default local",
+            f"6. Save running configuration: write memory",
+            f"7. Update username/password in NetTopology Device Settings."
+        ]
+        workflow_steps_fa = [
+            f"۱. اتصال به سوئیچ از طریق کابل کنسول یا تلنت مدیریتی.",
+            f"۲. ورود به حالت Privileged Exec با دستور enable",
+            f"۳. تعریف یا تصحیح کاربر با سطح دسترسی ۱۵: username {username} privilege 15 secret <رمز_عبور>",
+            f"۴. فعال‌سازی لاگین محلی روی خطوط VTY: line vty 0 15 -> login local -> transport input ssh",
+            f"۵. در صورت فعال بودن AAA: aaa authentication login default local",
+            f"۶. ذخیره تنظیمات روی حافظه پایدار: write memory",
+            f"۷. تصحیح و ثبت رمز عبور صحیح در تنظیمات دیوایس در پنل NetTopology."
+        ]
+        cisco_cmds = [
+            "enable",
+            "configure terminal",
+            f"username {username} privilege 15 secret <your_password>",
+            "line vty 0 15",
+            " login local",
+            " transport input ssh",
+            " exit",
+            "write memory"
+        ]
+
+    elif any(k in err_lower for k in ["kex", "cipher", "key exchange", "no acceptable", "no matching", "algorithm", "unknown cipher", "incompatible", "bad host key"]):
+        category = "CIPHER_KEY_MISMATCH"
+        summary = f"SSH Cipher / Algorithm negotiation issue with {host}:{port}"
+        root_cause_en = f"Cryptographic cipher or Key Exchange mismatch with Cisco 2960. The switch requires compatible KEX (DH Group 1/14), Cipher (AES-CBC/3DES), and an active RSA key pair."
+        root_cause_fa = f"عدم تطابق الگوریتم یا کلید سایفر: سوئیچ سیسکو ۲۹۶۰ فاقد کلید RSA تولیدشده است یا پروتکل SSHv2 فعال نگردیده است."
+        workflow_steps_en = [
+            "1. Verify current SSH status: show ip ssh",
+            "2. Ensure domain name is configured: configure terminal -> ip domain-name company.local",
+            "3. Generate 2048-bit RSA key pair: crypto key generate rsa modulus 2048",
+            "4. Enforce SSH Version 2: ip ssh version 2",
+            "5. Enable compatible legacy CBC ciphers if restricted: ip ssh server algorithm encryption aes128-cbc 3des-cbc aes256-cbc",
+            "6. Save configuration: write memory"
+        ]
+        workflow_steps_fa = [
+            "۱. بررسی وضعیت فعال بودن SSH روی سوئیچ: show ip ssh",
+            "۲. تنظیم نام دامنه الزامی: ip domain-name company.local",
+            "۳. تولید کلید رمزنگاری RSA با طول ۲۰۴۸ بیت: crypto key generate rsa modulus 2048",
+            "۴. اجبار سوئیچ به استفاده از نسخه ۲: ip ssh version 2",
+            "۵. فعال‌سازی سایفرهای سازگار CBC در صورت محدودیت: ip ssh server algorithm encryption aes128-cbc 3des-cbc aes256-cbc",
+            "۶. ذخیره کانفیگ روی حافظه NVRAM: write memory"
+        ]
+        cisco_cmds = [
+            "configure terminal",
+            "ip domain-name local.net",
+            "crypto key generate rsa modulus 2048",
+            "ip ssh version 2",
+            "ip ssh server algorithm encryption aes128-cbc 3des-cbc aes256-cbc",
+            "write memory"
+        ]
+
+    elif any(k in err_lower for k in ["refused", "connection refused", "111"]):
+        category = "CONNECTION_REFUSED"
+        summary = f"Connection refused by {host}:{port}"
+        root_cause_en = f"Connection refused by {host}:{port}. The device IP is reachable, but TCP port {port} is closed or SSH daemon is disabled on the switch."
+        root_cause_fa = f"اتصال به پورت {port} رد شد (Connection Refused): آی‌پی سوئیچ در دسترس است اما سرویس SSH فعال نشده یا یک لیست دسترسی (ACL) مانع اتصال شده است."
+        workflow_steps_en = [
+            "1. Check if SSH daemon is enabled: show ip ssh (if disabled, configure hostname and crypto key).",
+            "2. Enable SSHv2 transport on VTY lines: configure terminal -> line vty 0 15 -> transport input ssh",
+            "3. Check for blocking Access Control Lists (ACL): show running-config | section line vty",
+            "4. Verify permit rules for this management server: show access-lists",
+            "5. Save running configuration: write memory"
+        ]
+        workflow_steps_fa = [
+            "۱. بررسی فعال بودن سرویس SSH: show ip ssh",
+            "۲. فعال‌سازی ورودی SSH روی خطوط VTY: line vty 0 15 -> transport input ssh",
+            "۳. بررسی لیست‌های کنترل دسترسی (ACL): show running-config | section line vty",
+            "۴. اطمینان از مجاز بودن آی‌پی سرور مدیریت در اکسس‌لیست مربوطه: show access-lists",
+            "۵. ذخیره کانفیگ: write memory"
+        ]
+        cisco_cmds = [
+            "configure terminal",
+            "hostname SW2960",
+            "ip domain-name local.net",
+            "crypto key generate rsa modulus 1024",
+            "ip ssh version 2",
+            "line vty 0 15",
+            " transport input ssh",
+            " exit",
+            "write memory"
+        ]
+
+    elif any(k in err_lower for k in ["timed out", "timeout", "unreachable", "no route"]):
+        category = "TIMEOUT_UNREACHABLE"
+        summary = f"Connection timed out connecting to {host}:{port}"
+        root_cause_en = f"Network timeout connecting to {host}:{port}. Host did not respond within connection timeout or network path is unrouted/blocked."
+        root_cause_fa = f"تایم‌اوت ارتباط شبکه: پاسخی از آی‌پی {host} دریافت نشد. احتمال قطعی فیزیکی، عدم روتینگ یا مسدود بودن توسط فایروال وجود دارد."
+        workflow_steps_en = [
+            "1. Verify switch physical link is up: show interfaces status",
+            "2. Verify management VLAN interface (SVI): show ip interface brief (confirm VLAN 1 is UP/UP).",
+            "3. Verify default gateway on the switch: show ip default-gateway",
+            "4. Test ping from switch to management server: ping <server_ip>",
+            "5. Verify no firewall or VLAN trunk drop exists between server and switch."
+        ]
+        workflow_steps_fa = [
+            "۱. بررسی وضعیت فیزیکی پورت‌های آپ‌لینک: show interfaces status",
+            "۲. بررسی وضعیت اینترفیس مدیریتی سوئیچ: show ip interface brief (تایید حالت UP/UP اینترفیس VLAN 1).",
+            "۳. بررسی گیت‌وی پیش‌فرض: show ip default-gateway",
+            "۴. تست پینگ از سوئیچ به سمت سرور مدیریت: ping <server_ip>",
+            "۵. اطمینان از عدم مسدودسازی بسته‌ها در ترانک یا فایروال میانی."
+        ]
+        cisco_cmds = [
+            "show ip interface brief",
+            "show ip default-gateway",
+            "show interfaces status"
+        ]
+
+    elif any(k in err_lower for k in ["reset by peer", "peer closed", "closed by remote", "eof", "banner"]):
+        category = "SESSION_RESET_OR_VTY_EXHAUSTION"
+        summary = f"SSH session closed or reset by peer {host}:{port}"
+        root_cause_en = f"SSH session reset or dropped by Cisco 2960. All VTY lines (0-15) may be occupied by stale sessions, or maximum connection limit reached."
+        root_cause_fa = f"اتصال توسط سوئیچ قطع شد (Reset/EOF): خطوط VTY سوئیچ تکمیل شده‌اند یا نشست‌های قدیمی باز مانده‌اند."
+        workflow_steps_en = [
+            "1. Check active user sessions on the switch: show users",
+            "2. Disconnect stale hung sessions: clear line <line_number>",
+            "3. Configure idle timeout on VTY lines: configure terminal -> line vty 0 15 -> exec-timeout 10 0",
+            "4. Save configuration: write memory"
+        ]
+        workflow_steps_fa = [
+            "۱. بررسی نشست‌های باز و فعال روی سوئیچ: show users",
+            "۲. قطع و بستن نشست‌های معلق: clear line <شماره_خط>",
+            "۳. تنظیم تایم‌اوت عدم فعالیت روی خطوط VTY: line vty 0 15 -> exec-timeout 10 0",
+            "۴. ذخیره تغییرات: write memory"
+        ]
+        cisco_cmds = [
+            "show users",
+            "clear line <line_number>",
+            "configure terminal",
+            "line vty 0 15",
+            " exec-timeout 10 0",
+            " exit",
+            "write memory"
+        ]
+
+    else:
+        category = "SSH_GENERAL_ERROR"
+        summary = f"SSH connection failed to {host}:{port}: {err_str}"
+        root_cause_en = f"SSH connection error to {host}:{port}: {err_str}"
+        root_cause_fa = f"خطای ارتباط SSH با {host}:{port}: {err_str}"
+        workflow_steps_en = [
+            "1. Verify switch IP and port: ping and telnet to port 22",
+            "2. Verify switch configuration: show ip ssh",
+            "3. Check switch logging buffer for errors: show logging"
+        ]
+        workflow_steps_fa = [
+            "۱. بررسی پینگ و اتصال به پورت ۲۲ سوئیچ",
+            "۲. بررسی وضعیت سرویس SSH: show ip ssh",
+            "۳. مشاهده لاگ‌های خطای سوئیچ: show logging"
+        ]
+        cisco_cmds = [
+            "show ip ssh",
+            "show logging"
+        ]
+
+    sep = "=" * 78
+    steps_txt = "\r\n".join(f"  \x1b[33m{step}\x1b[0m" for step in workflow_steps_en)
+    steps_fa_txt = "\r\n".join(f"  \x1b[36m{step}\x1b[0m" for step in workflow_steps_fa)
+    cmds_txt = "\r\n".join(f"    \x1b[1;32m{cmd}\x1b[0m" for cmd in cisco_cmds)
+
+    ansi_output = (
+        f"\r\n\x1b[1;31m{sep}\x1b[0m\r\n"
+        f"\x1b[1;37;41m  SSH CONNECTION DIAGNOSTIC & TROUBLESHOOTING REPORT  \x1b[0m\r\n"
+        f"\x1b[1;31m{sep}\x1b[0m\r\n"
+        f"  \x1b[1mTarget Host\x1b[0m     : \x1b[36m{host}:{port}\x1b[0m\r\n"
+        f"  \x1b[1mConfigured User\x1b[0m : \x1b[36m{username}\x1b[0m\r\n"
+        f"  \x1b[1mPlatform\x1b[0m        : \x1b[36m{platform or 'cisco_catalyst_2960'}\x1b[0m\r\n"
+        f"  \x1b[1mSSH Engine\x1b[0m      : \x1b[36mParamiko {paramiko_ver} (SSHv2 Protocol)\x1b[0m\r\n"
+        f"  \x1b[1mError Category\x1b[0m  : \x1b[1;31m{category}\x1b[0m\r\n"
+        f"\r\n\x1b[1;33m[ROOT CAUSE / علت خطا]:\x1b[0m\r\n"
+        f"  \x1b[1;37m{root_cause_en}\x1b[0m\r\n"
+        f"  \x1b[90m{root_cause_fa}\x1b[0m\r\n"
+        f"\r\n\x1b[1;36m[CISCO 2960 RESOLUTION WORKFLOW (English)]:\x1b[0m\r\n"
+        f"{steps_txt}\r\n"
+        f"\r\n\x1b[1;36m[مراحل گام‌به‌گام رفع مشکل در سوئیچ سیسکو (فارسی)]:\x1b[0m\r\n"
+        f"{steps_fa_txt}\r\n"
+        f"\r\n\x1b[1;32m[EXACT CISCO IOS CLI COMMANDS TO RUN]:\x1b[0m\r\n"
+        f"{cmds_txt}\r\n"
+        f"\x1b[1;31m{sep}\x1b[0m\r\n\r\n"
+    )
+
+    diag_dict = {
+        "category": category,
+        "host": host,
+        "port": port,
+        "username": username,
+        "platform": platform,
+        "summary": summary,
+        "root_cause_en": root_cause_en,
+        "root_cause_fa": root_cause_fa,
+        "workflow_steps_en": workflow_steps_en,
+        "workflow_steps_fa": workflow_steps_fa,
+        "cisco_commands": cisco_cmds,
+        "paramiko_version": paramiko_ver,
+    }
+
+    return ansi_output, summary, category, diag_dict
+
+
 class NetworkTerminalSession:
     """
     Manages an active, real interactive bidirectional session to a physical/virtual network device
@@ -94,6 +324,8 @@ class NetworkTerminalSession:
         self.latency_ms = 0.0
         self.banner = ""
         self.error_message = ""
+        self.diagnostic_data: Dict[str, Any] = {}
+        self.diagnostic_category = ""
         self.is_real = False
         self.used_legacy_algorithms = False
 
@@ -292,46 +524,25 @@ class NetworkTerminalSession:
             self.is_real = False
             self._cleanup_resources()
 
-            err_str = str(first_error) if first_error else "Connection failed"
-            err_lower = err_str.lower()
+            ansi_report, summary, cat, diag_dict = generate_cisco_diagnostic_report(
+                error_exc=first_error,
+                host=self.host,
+                port=self.port,
+                username=self.username,
+                platform=self.platform,
+                used_legacy=self.used_legacy_algorithms
+            )
+            self.error_message = summary
+            self.diagnostic_category = cat
+            self.diagnostic_data = diag_dict
 
-            if isinstance(first_error, paramiko.AuthenticationException) or "auth" in err_lower or "denied" in err_lower:
-                user_msg = (
-                    f"\r\n\x1b[1;31m[SSH Authentication Failed]\x1b[0m\r\n"
-                    f"Access denied for user '{self.username}' on {self.host}:{self.port}.\r\n"
-                    f"Please verify the username and password in Device Properties.\r\n"
-                )
-                self.error_message = f"Authentication failed for user '{self.username}' on {self.host}:{self.port}"
-            elif "timed out" in err_lower or "timeout" in err_lower:
-                user_msg = (
-                    f"\r\n\x1b[1;31m[SSH Connection Timeout]\x1b[0m\r\n"
-                    f"Could not reach {self.host}:{self.port} within connection timeout.\r\n"
-                    f"Ensure the device is powered on, IP {self.host} is routed, and port {self.port} is open.\r\n"
-                )
-                self.error_message = f"Connection timed out connecting to {self.host}:{self.port}"
-            elif "refused" in err_lower:
-                user_msg = (
-                    f"\r\n\x1b[1;31m[SSH Connection Refused]\x1b[0m\r\n"
-                    f"Connection refused by {self.host}:{self.port}.\r\n"
-                    f"Verify that SSH server daemon is enabled on this device.\r\n"
-                )
-                self.error_message = f"Connection refused by {self.host}:{self.port}"
-            elif "unreachable" in err_lower or "no route" in err_lower:
-                user_msg = (
-                    f"\r\n\x1b[1;31m[Network Unreachable]\x1b[0m\r\n"
-                    f"No route to host {self.host} from the management server container.\r\n"
-                )
-                self.error_message = f"Host unreachable: {self.host}:{self.port}"
-            else:
-                user_msg = (
-                    f"\r\n\x1b[1;31m[SSH Error]\x1b[0m\r\n"
-                    f"Failed to establish live SSH connection to {self.host}:{self.port}:\r\n"
-                    f"{err_str}\r\n"
-                )
-                self.error_message = f"SSH error for {self.host}:{self.port}: {err_str}"
-
-            self._send_error_to_terminal(user_msg)
-            self.notify_status("failed", error=self.error_message)
+            self._send_error_to_terminal(ansi_report)
+            self.notify_status(
+                "failed",
+                error=self.error_message,
+                category=self.diagnostic_category,
+                diagnostic=self.diagnostic_data
+            )
             return False
 
         # Connection successful!

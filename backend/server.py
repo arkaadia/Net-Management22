@@ -3884,7 +3884,7 @@ def start_websocket_server(ws_port: int):
             username = (qs.get("username") or qs.get("user") or [conn.get("username") or device.get("ssh_username") or "admin"])[0].strip()
             password = (qs.get("password") or [conn.get("password") or device.get("ssh_password") or ""])[0]
             enable_password = conn.get("enable_password") or device.get("enable_password") or ""
-            platform = device.get("platform", "cisco_ios_xe")
+            platform = (qs.get("platform") or [device.get("platform", "cisco_ios_xe")])[0].strip()
             req_shell = qs.get("shell", [device.get("default_shell", "bash")])[0].strip().lower()
 
             if not host:
@@ -3959,12 +3959,15 @@ def start_websocket_server(ws_port: int):
                 await websocket.send(json.dumps({
                     "type": "error",
                     "error": session.error_message or f"Connection failed to {host}:{port} via {protocol.upper()}.",
-                    "code": "CONNECTION_FAILED"
+                    "code": session.diagnostic_category or "CONNECTION_FAILED",
+                    "diagnostic": session.diagnostic_data or {}
                 }))
                 await websocket.send(json.dumps({
                     "type": "status",
                     "status": "failed",
-                    "message": session.error_message or "Connection failed"
+                    "category": session.diagnostic_category or "CONNECTION_FAILED",
+                    "message": session.error_message or "Connection failed",
+                    "diagnostic": session.diagnostic_data or {}
                 }))
                 # Keep websocket open until client disconnects or user closes modal
                 # so the exact error remains readable in the UI

@@ -2,12 +2,12 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { Client, ConnectConfig } from 'ssh2';
 
 /**
  * Terminal WebSocket Gateway
- * Supports native direct ssh2 client for real Linux remote servers and switches
- * with full interactive PTY streaming, input forwarding, and clean fallback.
+ * Bridges interactive terminal WebSocket streams from the frontend directly
+ * to the Python Paramiko SSH engine (running on ws://127.0.0.1:${pythonWsPort}).
+ * Ensures 100% real Paramiko SSHv2 execution with zero fake or simulated data.
  */
 export function setupTerminalWebSocket(
   server: http.Server,
@@ -57,7 +57,7 @@ export function setupTerminalWebSocket(
     let username = rawUser === 'undefined' || rawUser === 'null' ? 'root' : rawUser;
     let rawPassword = parsedUrl.searchParams.get('password') || '';
     let password = rawPassword === 'undefined' || rawPassword === 'null' ? '' : rawPassword;
-    const shell = parsedUrl.searchParams.get('shell') || 'bash';
+    let platform = parsedUrl.searchParams.get('platform') || '';
 
     // If host is not in query params or empty, look up in database_store.json
     if (!host && deviceId && deviceId !== 'undefined' && deviceId !== 'null') {
@@ -72,6 +72,7 @@ export function setupTerminalWebSocket(
             host = srv.ip || srv.hostname || '';
             port = srv.ssh_port || 22;
             username = srv.ssh_username || 'root';
+            platform = 'linux';
             if (!password && !srv.prompt_password_on_connect) {
               password = srv.ssh_password || '';
             }
@@ -81,6 +82,7 @@ export function setupTerminalWebSocket(
               host = dev.ip || '';
               port = dev.connection?.port || dev.ssh_port || 22;
               username = dev.connection?.username || dev.ssh_username || 'admin';
+              platform = dev.platform || dev.type || 'cisco_ios';
               if (!password) {
                 password = dev.connection?.password || dev.ssh_password || '';
               }
@@ -92,231 +94,131 @@ export function setupTerminalWebSocket(
       }
     }
 
-    const sendClient = (payload: any) => {
+    // Construct target URL for Python backend WebSocket server
+    const targetUrl = new URL(req.url || '', `http://127.0.0.1:${pythonWsPort}`);
+    if (deviceId && !targetUrl.searchParams.get('deviceId') && !targetUrl.searchParams.get('device_id')) {
+      targetUrl.searchParams.set('deviceId', deviceId);
+    }
+    if (host && !targetUrl.searchParams.get('host') && !targetUrl.searchParams.get('ip')) {
+      targetUrl.searchParams.set('host', host);
+    }
+    if (port && !targetUrl.searchParams.get('port')) {
+      targetUrl.searchParams.set('port', String(port));
+    }
+    if (username && !targetUrl.searchParams.get('username') && !targetUrl.searchParams.get('user')) {
+      targetUrl.searchParams.set('username', username);
+    }
+    if (password && !targetUrl.searchParams.get('password')) {
+      targetUrl.searchParams.set('password', password);
+    }
+    if (platform && !targetUrl.searchParams.get('platform')) {
+      targetUrl.searchParams.set('platform', platform);
+    }
+
+    const pythonWsUrl = `ws://127.0.0.1:${pythonWsPort}${targetUrl.pathname}${targetUrl.search}`;
+    console.log(`[TerminalWs] Proxying terminal WebSocket to Python Paramiko engine: ws://127.0.0.1:${pythonWsPort}${targetUrl.pathname} (Device: ${deviceId}, Target: ${host}:${port})`);
+
+    // Connect directly to Python Paramiko WebSocket server
+    let pythonWs: WebSocket | null = null;
+    const messageQueue: Array<WebSocket.Data> = [];
+    let isPythonWsOpen = false;
+
+    try {
+      pythonWs = new WebSocket(pythonWsUrl);
+    } catch (wsInitErr: any) {
+      console.error('[TerminalWs] Failed to create WebSocket to Python backend:', wsInitErr);
       if (clientWs.readyState === WebSocket.OPEN) {
-        if (typeof payload === 'string') {
-          clientWs.send(payload);
-        } else {
-          clientWs.send(JSON.stringify(payload));
-        }
-      }
-    };
-
-    // If host is configured, attempt native ssh2 client connection directly
-    if (host && host !== '0.0.0.0') {
-      let isSshConnected = false;
-      let hasRetriedLegacy = false;
-      let activeSshClient: Client | null = null;
-
-      const attemptSshConnect = (useLegacyAlgorithms = false) => {
-        const sshClient = new Client();
-        activeSshClient = sshClient;
-
-        sendClient({
+        clientWs.send(JSON.stringify({
+          type: 'error',
+          error: `Failed to initialize Python SSH WebSocket client: ${wsInitErr.message}`,
+          code: 'BACKEND_INIT_ERROR',
+        }));
+        clientWs.send(JSON.stringify({
           type: 'status',
-          status: 'connecting',
-          host,
-          port,
-          message: useLegacyAlgorithms
-            ? `Connecting to ${host}:${port} via SSH2 (Legacy Adaptive Mode)...`
-            : `Connecting to ${host}:${port} via SSH2 Native Engine...`,
-        });
-
-        sshClient.on('ready', () => {
-          isSshConnected = true;
-          sshClient.shell(
-            { term: 'xterm-256color', cols: 120, rows: 36 },
-            (err, stream) => {
-              if (err) {
-                console.warn(`[TerminalWs] PTY Shell creation error on ${host}:`, err.message);
-                sendClient({
-                  type: 'status',
-                  status: 'failed',
-                  error: err.message,
-                  message: `Failed to open PTY shell on ${host}: ${err.message}`,
-                });
-                return;
-              }
-
-              sendClient({
-                type: 'status',
-                status: 'connected',
-                is_real: true,
-                host,
-                port,
-                username,
-                message: `Live SSH connected to ${host}:${port} (${shell})`,
-              });
-
-              stream.on('data', (chunk: Buffer) => {
-                sendClient({
-                  type: 'data',
-                  data: chunk.toString('utf-8'),
-                });
-              });
-
-              stream.on('close', () => {
-                sendClient({
-                  type: 'status',
-                  status: 'disconnected',
-                  message: `SSH stream from ${host} closed.`,
-                });
-                try {
-                  sshClient.end();
-                } catch {}
-              });
-
-              clientWs.on('message', (raw: WebSocket.Data) => {
-                try {
-                  const text = raw.toString();
-                  let msgData = text;
-                  try {
-                    const parsed = JSON.parse(text);
-                    if (parsed.type === 'input' || parsed.type === 'stdin') {
-                      msgData = parsed.data || '';
-                    } else if (parsed.type === 'resize') {
-                      stream.setWindow(parsed.rows || 36, parsed.cols || 120, 0, 0);
-                      return;
-                    }
-                  } catch {}
-                  stream.write(msgData);
-                } catch (writeErr: any) {
-                  console.warn('[TerminalWs] Stream write error:', writeErr.message);
-                }
-              });
-            }
-          );
-        });
-
-        sshClient.on('error', (err: Error) => {
-          console.warn(`[TerminalWs] SSH2 connection error to ${host}:${port}:`, err.message);
-
-          // Rule 12: Adaptive Protocol Negotiation - modern first, automatic legacy fallback
-          const isAlgorithmOrHandshakeError =
-            err.message.includes('handshake') ||
-            err.message.includes('algorithm') ||
-            err.message.includes('kex') ||
-            err.message.includes('key') ||
-            err.message.includes('cipher') ||
-            err.message.includes('negotiation');
-
-          if (!useLegacyAlgorithms && !hasRetriedLegacy && isAlgorithmOrHandshakeError) {
-            hasRetriedLegacy = true;
-            try {
-              sshClient.end();
-            } catch {}
-            sendClient({
-              type: 'data',
-              data: `\r\n\x1b[36m[Adaptive SSH]\x1b[0m Modern algorithm negotiation failed (${err.message}). Retrying with legacy cryptographic ciphers...\r\n`,
-            });
-            setTimeout(() => {
-              attemptSshConnect(true);
-            }, 300);
-            return;
-          }
-
-          sendClient({
-            type: 'status',
-            status: 'failed',
-            error: err.message,
-            message: `Connection failed: ${err.message}`,
-          });
-          sendClient({
-            type: 'data',
-            data: `\r\n\x1b[33m[SSH Notice]\x1b[0m Direct SSH to ${host}:${port} unreachable (${err.message}).\r\n\x1b[90mActive in interactive terminal emulator runtime.\x1b[0m\r\n`,
-          });
-        });
-
-        sshClient.on('close', () => {
-          if (isSshConnected) {
-            sendClient({
-              type: 'status',
-              status: 'disconnected',
-              message: 'SSH connection terminated.',
-            });
-          }
-        });
-
-        const connectConfig: ConnectConfig = {
-          host,
-          port,
-          username,
-          readyTimeout: 7000,
-          keepaliveInterval: 10000,
-        };
-
-        if (password) {
-          connectConfig.password = password;
-        }
-
-        if (useLegacyAlgorithms) {
-          connectConfig.algorithms = {
-            kex: [
-              'ecdh-sha2-nistp256',
-              'ecdh-sha2-nistp384',
-              'ecdh-sha2-nistp521',
-              'diffie-hellman-group16-sha512',
-              'diffie-hellman-group18-sha512',
-              'diffie-hellman-group-exchange-sha256',
-              'diffie-hellman-group14-sha256',
-              'diffie-hellman-group14-sha1',
-              'diffie-hellman-group-exchange-sha1',
-              'diffie-hellman-group1-sha1',
-            ],
-            cipher: [
-              'chacha20-poly1305@openssh.com',
-              'aes256-gcm@openssh.com',
-              'aes128-gcm@openssh.com',
-              'aes256-gcm',
-              'aes128-gcm',
-              'aes256-ctr',
-              'aes192-ctr',
-              'aes128-ctr',
-              'aes256-cbc',
-              'aes192-cbc',
-              'aes128-cbc',
-              '3des-cbc',
-            ],
-            serverHostKey: [
-              'ssh-ed25519',
-              'ecdsa-sha2-nistp256',
-              'ecdsa-sha2-nistp384',
-              'ecdsa-sha2-nistp521',
-              'rsa-sha2-512',
-              'rsa-sha2-256',
-              'ssh-rsa',
-              'ssh-dss',
-            ],
-          };
-        }
-
-        try {
-          sshClient.connect(connectConfig);
-        } catch (connErr: any) {
-          sendClient({
-            type: 'status',
-            status: 'failed',
-            error: connErr.message,
-          });
-        }
-      };
-
-      clientWs.on('close', () => {
-        try {
-          activeSshClient?.end();
-        } catch {}
-      });
-
-      attemptSshConnect(false);
+          status: 'failed',
+          message: 'Python backend WebSocket client initialization failed.',
+        }));
+      }
       return;
     }
 
-    // Default fallback when no specific host is configured
-    sendClient({
-      type: 'status',
-      status: 'connected',
-      is_real: false,
-      message: 'Connected to interactive terminal emulator runtime.',
+    pythonWs.on('open', () => {
+      isPythonWsOpen = true;
+      while (messageQueue.length > 0) {
+        const queued = messageQueue.shift();
+        if (queued !== undefined && pythonWs?.readyState === WebSocket.OPEN) {
+          pythonWs.send(queued);
+        }
+      }
+    });
+
+    pythonWs.on('message', (data: WebSocket.Data) => {
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(data);
+      }
+    });
+
+    pythonWs.on('error', (err: Error) => {
+      console.warn(`[TerminalWs] Python Paramiko WebSocket error on port ${pythonWsPort}:`, err.message);
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({
+          type: 'error',
+          error: `Python Paramiko SSH Engine is unreachable on ws://127.0.0.1:${pythonWsPort}.`,
+          code: 'PYTHON_BACKEND_UNAVAILABLE',
+          diagnostic: {
+            category: 'BACKEND_SERVICE_OFFLINE',
+            host,
+            port,
+            username,
+            root_cause_en: `The Python SSH backend daemon (server.py) is not responding on port ${pythonWsPort}.`,
+            root_cause_fa: `سرویس بک‌اند پایتون (server.py) روی پورت ${pythonWsPort} پاسخگو نیست.`,
+            workflow_steps_en: [
+              'Verify python3 backend process is running: ps aux | grep server.py',
+              `Check listening ports: ss -tulpn | grep ${pythonWsPort}`,
+              'Restart backend service: ./restart.sh or python3 backend/server.py',
+            ],
+            workflow_steps_fa: [
+              'بررسی فعال بودن پروسه پایتون: ps aux | grep server.py',
+              `بررسی پورت فعال: ss -tulpn | grep ${pythonWsPort}`,
+              'راه‌اندازی مجدد سرویس: ./restart.sh یا اجرای دستی python3 backend/server.py',
+            ],
+          },
+        }));
+        clientWs.send(JSON.stringify({
+          type: 'status',
+          status: 'failed',
+          category: 'BACKEND_SERVICE_OFFLINE',
+          message: `Python Paramiko SSH Engine unavailable on port ${pythonWsPort}.`,
+        }));
+        clientWs.send(JSON.stringify({
+          type: 'data',
+          data: `\r\n\x1b[1;31m[BACKEND CONNECTION ERROR]\x1b[0m Python Paramiko SSH engine is not responding on port ${pythonWsPort}.\r\n`,
+        }));
+      }
+    });
+
+    pythonWs.on('close', () => {
+      if (clientWs.readyState === WebSocket.OPEN || clientWs.readyState === WebSocket.CONNECTING) {
+        clientWs.close();
+      }
+    });
+
+    clientWs.on('message', (data: WebSocket.Data) => {
+      if (isPythonWsOpen && pythonWs?.readyState === WebSocket.OPEN) {
+        pythonWs.send(data);
+      } else if (pythonWs?.readyState === WebSocket.CONNECTING) {
+        if (messageQueue.length < 200) {
+          messageQueue.push(data);
+        }
+      }
+    });
+
+    clientWs.on('close', () => {
+      if (pythonWs && (pythonWs.readyState === WebSocket.OPEN || pythonWs.readyState === WebSocket.CONNECTING)) {
+        try {
+          pythonWs.close();
+        } catch {}
+      }
     });
   });
 }

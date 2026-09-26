@@ -701,20 +701,19 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
                       id: 'sys-ssh-ok-' + Date.now(),
                       type: 'success',
                       text: isEn
-                        ? `[LIVE ${(connProtocol || 'ssh').toUpperCase()} ESTABLISHED] Connected to ${targetHost}:${sshPort} in ${msg.latency_ms || 2}ms.\nSession: Persistent WebSocket SSH Tunnel Active. Commands execute directly on hardware.`
-                        : `[اتصال زنده ${(connProtocol || 'ssh').toUpperCase()} برقرار شد] اتصال به ${targetHost}:${sshPort} در ${msg.latency_ms || 2} میلی‌ثانیه برقرار شد.\nنشست: تانل پایدار سوکت فعال است و دستورات مستقیماً روی سخت‌افزار اجرا می‌شوند.`,
+                        ? `[LIVE ${(connProtocol || 'ssh').toUpperCase()} ESTABLISHED] Connected to ${targetHost}:${sshPort} via Paramiko 2 (SSHv2) in ${msg.latency_ms || 2}ms.\nSession: Persistent WebSocket SSH Tunnel Active. Real interactive PTY hardware channel.`
+                        : `[اتصال زنده ${(connProtocol || 'ssh').toUpperCase()} برقرار شد] اتصال به ${targetHost}:${sshPort} از طریق پارامیکو ۲ (پروتکل SSHv2) در ${msg.latency_ms || 2} میلی‌ثانیه برقرار شد.\nنشست: تانل وب‌سوکت پایدار فعال است و ارتباط با سخت‌افزار واقعی سوئیچ سیسکو برقرار می‌باشد.`,
                     },
                   ]);
                 } else {
-                  setSshSessionMode('simulated');
-                  setSshLatency(msg.latency_ms || 1.2);
+                  setSshSessionMode('failed');
                   appendLines([
                     {
-                      id: 'sys-sim-ok-' + Date.now(),
+                      id: 'sys-fail-real-' + Date.now(),
                       type: 'system',
                       text: isEn
-                        ? `[INTERACTIVE CLI READY] Connected to ${targetHost ? `${targetHost}:${sshPort} Engine` : `${curDev.name} Local Terminal Engine`}.\nSession: Interactive CLI Session Active.`
-                        : `[ترمینال تعاملی آماده] اتصال به ${targetHost ? `موتور ${targetHost}:${sshPort}` : `موتور ترمینال محلی ${curDev.name}`} برقرار شد.\nنشست: ترمینال تعاملی با پشتیبانی کامل از دستورات فعال است.`,
+                        ? `[CONNECTION FAILED] Device ${targetHost}:${sshPort} did not establish authentic hardware SSH session.`
+                        : `[خطای اتصال] امکان برقراری ارتباط زنده و واقعی سخت‌افزاری با ${targetHost}:${sshPort} میسر نشد.`,
                     },
                   ]);
                 }
@@ -727,6 +726,34 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
                     text: `[CONNECTION STATUS] ${msg.message || (isEn ? 'Disconnected from device' : 'ارتباط با تجهیز قطع شد')}`,
                   },
                 ]);
+                if (msg.diagnostic) {
+                  const diag = msg.diagnostic;
+                  const cause = isEn ? (diag.root_cause_en || diag.summary) : (diag.root_cause_fa || diag.summary);
+                  const steps: string[] = isEn ? (diag.workflow_steps_en || []) : (diag.workflow_steps_fa || []);
+                  const cmds: string[] = diag.cisco_commands || [];
+                  const diagLines: TerminalLine[] = [
+                    {
+                      id: 'ws-diag-cause-' + Date.now(),
+                      type: 'system',
+                      text: `[ROOT CAUSE / علت خطا]\n${cause}`,
+                    },
+                  ];
+                  if (steps.length > 0) {
+                    diagLines.push({
+                      id: 'ws-diag-steps-' + Date.now(),
+                      type: 'system',
+                      text: `[TROUBLESHOOTING WORKFLOW / مراحل رفع مشکل]\n${steps.join('\n')}`,
+                    });
+                  }
+                  if (cmds.length > 0) {
+                    diagLines.push({
+                      id: 'ws-diag-cmds-' + Date.now(),
+                      type: 'system',
+                      text: `[CISCO CLI COMMANDS / دستورات سیسکو]:\n${cmds.join('\n')}`,
+                    });
+                  }
+                  appendLines(diagLines);
+                }
               }
             } else if (msg.type === 'error') {
               setSshSessionMode('failed');
@@ -737,6 +764,34 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
                   text: `[TERMINAL ERROR] ${msg.error || (isEn ? 'Connection error' : 'خطای ارتباط')}`,
                 },
               ]);
+              if (msg.diagnostic) {
+                const diag = msg.diagnostic;
+                const cause = isEn ? (diag.root_cause_en || diag.summary) : (diag.root_cause_fa || diag.summary);
+                const steps: string[] = isEn ? (diag.workflow_steps_en || []) : (diag.workflow_steps_fa || []);
+                const cmds: string[] = diag.cisco_commands || [];
+                const errDiagLines: TerminalLine[] = [
+                  {
+                    id: 'ws-diag-cause-err-' + Date.now(),
+                    type: 'system',
+                    text: `[ROOT CAUSE / علت خطا]\n${cause}`,
+                  },
+                ];
+                if (steps.length > 0) {
+                  errDiagLines.push({
+                    id: 'ws-diag-steps-err-' + Date.now(),
+                    type: 'system',
+                    text: `[TROUBLESHOOTING WORKFLOW / مراحل رفع مشکل]\n${steps.join('\n')}`,
+                  });
+                }
+                if (cmds.length > 0) {
+                  errDiagLines.push({
+                    id: 'ws-diag-cmds-err-' + Date.now(),
+                    type: 'system',
+                    text: `[CISCO CLI COMMANDS / دستورات سیسکو]:\n${cmds.join('\n')}`,
+                  });
+                }
+                appendLines(errDiagLines);
+              }
             }
           } catch {
             const rawStr = String(event.data || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();

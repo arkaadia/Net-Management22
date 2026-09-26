@@ -100,6 +100,51 @@ TIER2_LEGACY_MACS = (
     'hmac-sha2-256',
 )
 
+# ==============================================================================
+# Cisco Catalyst 2960 / Catalyst IOS Adaptive Cryptographic Suite
+# Cisco Catalyst 2960/3560 switches natively expect SSHv2 with DH Group 14/1 SHA1,
+# classic ssh-rsa host keys, and aes128-cbc / 3des-cbc ciphers.
+# Sending modern elliptic curves (curve25519) first causes older IOS 12/15 to reset TCP sessions.
+# ==============================================================================
+CISCO_2960_KEX = (
+    'diffie-hellman-group14-sha1',
+    'diffie-hellman-group1-sha1',
+    'diffie-hellman-group-exchange-sha1',
+    'diffie-hellman-group-exchange-sha256',
+    'diffie-hellman-group14-sha256',
+    'diffie-hellman-group16-sha512',
+    'curve25519-sha256@libssh.org',
+    'ecdh-sha2-nistp256',
+)
+
+CISCO_2960_KEYS = (
+    'ssh-rsa',
+    'rsa-sha2-256',
+    'rsa-sha2-512',
+    'ssh-dss',
+    'ssh-ed25519',
+    'ecdsa-sha2-nistp256',
+)
+
+CISCO_2960_CIPHERS = (
+    'aes128-cbc',
+    '3des-cbc',
+    'aes256-cbc',
+    'aes192-cbc',
+    'aes128-ctr',
+    'aes192-ctr',
+    'aes256-ctr',
+)
+
+CISCO_2960_MACS = (
+    'hmac-sha1',
+    'hmac-sha1-96',
+    'hmac-sha2-256',
+    'hmac-sha2-512',
+    'hmac-md5',
+    'hmac-md5-96',
+)
+
 _PATCHED = False
 
 
@@ -767,6 +812,121 @@ def connect_mikrotik_ssh(
     return False, last_error or f"MikroTik SSH connection failed for user '{user_to_try}' on {hostname}:{port}"
 
 
+def connect_cisco_2960_ssh(
+    client: Any,
+    hostname: str,
+    port: int = 22,
+    username: str = "",
+    password: str = "",
+    timeout: float = 6.0,
+    banner_timeout: float = 6.0,
+    auth_timeout: float = 6.0,
+    on_fallback_log: Optional[Any] = None
+) -> Tuple[bool, Optional[str]]:
+    """
+    Dedicated Adaptive SSH Engine for Cisco Catalyst 2960, 3560, 3750 and Cisco IOS 12/15 devices.
+    Prioritizes Cisco native cryptographic suites (DH Group 14/1 SHA1, ssh-rsa, AES-CBC, 3DES-CBC)
+    to prevent older IOS packet aborts, seamlessly falling back to modern suites if peer is IOS-XE.
+    """
+    ensure_paramiko_compatibility()
+    import paramiko
+
+    # 1. Attempt Cisco 2960 / Catalyst Native Suite
+    sock = None
+    transport = None
+    last_err = None
+    auth_failed = False
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((hostname, port))
+
+        transport = paramiko.Transport(sock)
+        apply_security_options_safely(
+            transport,
+            kex_candidates=CISCO_2960_KEX,
+            key_candidates=CISCO_2960_KEYS,
+            cipher_candidates=CISCO_2960_CIPHERS,
+            mac_candidates=CISCO_2960_MACS
+        )
+        transport.start_client(timeout=banner_timeout)
+        auth_ok, auth_err = authenticate_transport(transport, username=username, password=password)
+
+        if auth_ok:
+            client._transport = transport
+            client._negotiation_info = extract_negotiation_info(transport, "cisco_2960_native")
+            logger.info(
+                f"[Cisco 2960 SSH] Connected successfully to {hostname}:{port} | "
+                f"KEX: {client._negotiation_info['kex']} | "
+                f"Cipher: {client._negotiation_info['cipher']} | "
+                f"Key: {client._negotiation_info['key_type']}"
+            )
+            return True, None
+        else:
+            auth_failed = True
+            last_err = auth_err or f"Authentication failed for user '{username}' on Cisco switch"
+    except Exception as e:
+        last_err = str(e).strip()
+        logger.debug(f"[Cisco 2960 SSH] Primary attempt notice: {e}")
+    finally:
+        if not getattr(client, '_transport', None) or client._transport is not transport:
+            if transport:
+                try: transport.close()
+                except Exception: pass
+            if sock:
+                try: sock.close()
+                except Exception: pass
+
+    if auth_failed:
+        return False, last_err
+
+    # If the error is network unreachability or connection refused, no need to retry algorithms
+    if not is_handshake_or_algo_mismatch(Exception(last_err or "")):
+        return False, last_err
+
+    # 2. Modern Fallback (in case device is actually modern Cisco IOS-XE / Catalyst 9000)
+    if on_fallback_log and callable(on_fallback_log):
+        on_fallback_log(f"Attempting modern Cisco IOS-XE suite for {hostname}:{port}...")
+
+    sock_m = None
+    transport_m = None
+    try:
+        sock_m = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock_m.settimeout(timeout)
+        sock_m.connect((hostname, port))
+
+        transport_m = paramiko.Transport(sock_m)
+        apply_security_options_safely(
+            transport_m,
+            kex_candidates=TIER1_MODERN_KEX,
+            key_candidates=TIER1_MODERN_KEYS,
+            cipher_candidates=TIER1_MODERN_CIPHERS,
+            mac_candidates=TIER1_MODERN_MACS
+        )
+        transport_m.start_client(timeout=banner_timeout)
+        auth_ok_m, auth_err_m = authenticate_transport(transport_m, username=username, password=password)
+
+        if auth_ok_m:
+            client._transport = transport_m
+            client._negotiation_info = extract_negotiation_info(transport_m, "cisco_modern_fallback")
+            return True, None
+        else:
+            last_err = auth_err_m or f"Authentication failed for user '{username}'"
+    except Exception as e_m:
+        last_err = str(e_m).strip() or last_err
+    finally:
+        if not getattr(client, '_transport', None) or client._transport is not transport_m:
+            if transport_m:
+                try: transport_m.close()
+                except Exception: pass
+            if sock_m:
+                try: sock_m.close()
+                except Exception: pass
+
+    return False, last_err or f"Cisco SSH connection failed on {hostname}:{port}"
+
+
 def connect_ssh_device(
     client: Any,
     hostname: str,
@@ -785,6 +945,8 @@ def connect_ssh_device(
       Fast path for 100% of modern infrastructure with zero latency penalty or legacy overhead.
     - Tier 2 (Adaptive Legacy Fallback): If (and only if) Tier 1 fails on algorithm/KEX mismatch,
       automatically retries with legacy Cisco algorithms (DH Group 14/1, ssh-rsa, AES-CBC, 3DES).
+    - Cisco 2960 / Catalyst Suite: When target platform is Cisco 2960 or Catalyst IOS, runs
+      the Cisco 2960 optimized cryptographic suite with graceful modern fallback.
     - MikroTik RouterOS Engine: When target platform is MikroTik (or ROSSSH is identified), executes
       hardened MikroTik SSH negotiation bypassing RFC 8332 bug and auth_none/password quirks.
     
@@ -795,9 +957,25 @@ def connect_ssh_device(
     ensure_paramiko_compatibility()
     import paramiko
 
+    plat_lower = str(platform or "").lower()
+
     # Check if target platform is explicitly MikroTik
-    if "mikrotik" in str(platform or "").lower():
+    if "mikrotik" in plat_lower or "routeros" in plat_lower:
         return connect_mikrotik_ssh(
+            client,
+            hostname=hostname,
+            port=port,
+            username=username,
+            password=password,
+            timeout=timeout,
+            banner_timeout=banner_timeout,
+            auth_timeout=auth_timeout,
+            on_fallback_log=on_fallback_log
+        )
+
+    # Check if target platform is Cisco Catalyst 2960 or Cisco IOS
+    if any(k in plat_lower for k in ["2960", "catalyst", "cisco_ios", "cisco"]):
+        return connect_cisco_2960_ssh(
             client,
             hostname=hostname,
             port=port,
