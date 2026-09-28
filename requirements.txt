@@ -1,4 +1,5 @@
 # NetTopology Python Backend Dependencies
-paramiko>=3.4.0
-cryptography>=42.0.0
-websockets>=12.0
+# Pinned to Paramiko 2.x for legacy/enterprise Cisco 2960 & modern switch compatibility
+paramiko==2.12.0
+cryptography>=3.3,<41.0.0
+websockets>=10.4
