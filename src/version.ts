@@ -10,9 +10,30 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.174.0';
+export const APP_VERSION = '1.175.0';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.175.0',
+    releaseDate: '2026-09-28',
+    type: 'minor',
+    title: 'فاز ۳ ارتباط زنده و تعاملی وب‌سوکت ترمینال SSH-2 با پایتون و پارامیکو، استریم بلادرنگ، کلیدهای کنترلی و تغییر اندازه پویا',
+    title_en: 'Phase 3 Live Bidirectional WebSocket Interactive Terminal with Paramiko SSH-2, Real-Time PTY Stream, Control Keystrokes & Dynamic Resize',
+    changes: [
+      'برقراری جریان دوطرفه و بلادرنگ وب‌سوکت میان مرورگر، پروکسی سرور و بک‌اند پایتون/پارامیکو ۲ بدون هرگونه نظرسنجی دوره‌ای (Polling).',
+      'تجهیز ترمینال تعاملی به ارسال مستقیم کاراکترهای کنترلی شامل اینتر، بک‌اسپیس، جهت‌نماها (Arrow Keys)، کلید وقفه Ctrl+C و خروج Ctrl+D به کانال PTY سخت‌افزاری واقعی.',
+      'پشتیبانی خودکار از تغییر ابعاد پنجره و ارسال پیام resize (تغییر سطرها و ستون‌های PTY متناسب با وضعیت تمام‌صفحه یا پنجره عادی).',
+      'حفظ پرامپت و محتوای خروجی واقعی سخت‌افزار بدون تزریق کاراکتر یا تغییر در ورودی کاربر و مدیریت هوشمند صفحه‌بندی --More-- سوئیچ‌های سیسکو.',
+      'جداسازی کامل نشست‌های چندکاربره در حافظه و پیشگیری قطعی از نشت نشست یا داده میان کاربران با پاک‌سازی ایزوله سوکت‌ها و کانال‌ها در قطع ارتباط.'
+    ],
+    changes_en: [
+      'Established authentic, bidirectional real-time WebSocket pipeline connecting browser terminal directly to Python Paramiko 2 SSH-2 PTY channel without polling.',
+      'Equipped interactive terminal with native control character transmission including Enter, Backspace, Arrow keys, Ctrl+C interrupt, and Ctrl+D EOF directly to the remote PTY.',
+      'Implemented automatic terminal resize notification syncing rows and columns dynamically with PTY channel upon toggling fullscreen mode.',
+      'Preserved authentic hardware prompt and CLI output verbatim without injecting artificial text or modifying user inputs, with seamless Cisco --More-- pagination handling.',
+      'Enforced strict multi-user session isolation and clean socket teardown on disconnect to prevent session or data leakage.'
+    ]
+  },
   {
     version: '1.174.0',
     releaseDate: '2026-09-26',

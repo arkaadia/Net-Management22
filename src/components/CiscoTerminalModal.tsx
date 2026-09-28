@@ -2130,6 +2130,23 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Interactive terminal control characters (Ctrl+C, Ctrl+D)
+    if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+      e.preventDefault();
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'input', data: '\x03' }));
+      }
+      setCurrentInput('');
+      return;
+    }
+    if (e.ctrlKey && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault();
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'input', data: '\x04' }));
+      }
+      return;
+    }
+
     if (e.key === 'Enter') {
       e.preventDefault();
       executeCommand(currentInput);
@@ -2547,7 +2564,17 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
 
             {!isEmbedded && (
               <button
-                onClick={() => setIsFullscreen(!isFullscreen)}
+                onClick={() => {
+                  const nextFs = !isFullscreen;
+                  setIsFullscreen(nextFs);
+                  if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify({
+                      type: 'resize',
+                      cols: nextFs ? 180 : 120,
+                      rows: nextFs ? 50 : 36,
+                    }));
+                  }
+                }}
                 className="p-1.5 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition"
                 title={isFullscreen ? (isEn ? 'Exit Fullscreen' : 'حالت پنجره') : (isEn ? 'Fullscreen' : 'تمام صفحه')}
               >
