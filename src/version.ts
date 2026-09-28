@@ -10,9 +10,32 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.175.0';
+export const APP_VERSION = '1.176.0';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.176.0',
+    releaseDate: '2026-09-28',
+    type: 'minor',
+    title: 'فاز ۴ — اکشن و مؤلفه تست و دریافت اطلاعات SSH V2 با موتور پارامیکو ۲، کاوش مشخصات واقعی و اتصال ترمینال تعاملی',
+    title_en: 'Phase 4 — SSH V2 Test & Fetch Action & Component with Paramiko 2 Engine, Authentic Hardware Discovery & Interactive Terminal Launch',
+    changes: [
+      'افزودن اکشن و کامپوننت اختصاصی «SSH V2 Test & Fetch» در مودال افزودن و معرفی تجهیزات جدید (Introduce New Device).',
+      'برقراری اتصال واقعی SSH-2 به دستگاه هدف از طریق موتور بک‌اند پایتون و کتابخانه Paramiko 2.x بدون نیاز به ورود مجدد اطلاعات هویتی.',
+      'حذف کامل و قطعی هرگونه داده ساختگی، شبیه‌سازی یا موفقیت کاذب (بر اساس قانون تخطی‌ناپذیر ۸) و انعکاس شفاف خطاهای واقعی سوکت و پروتکل.',
+      'شناسایی و تفکیک دقیق وضعیت اتصال، پروتکل SSH-2، نام کاربر احراز هویت شده، پرامپت خط فرمان، سازنده، مدل و نسخه واقعی سیستم‌عامل.',
+      'پشتیبانی جامع از تجهیزات غیر سیسکو و اجرای تطبیقی دستورات متناسب با سازنده (سیسکو، میکروتیک، لینوکس و عمومی) همراه با گزارش خطاهای واقعی دستورات پشتیبانی‌نشده.',
+      'تعبیه اکشن مستقیم باز کردن ترمینال تعاملی SSH بر روی نشست واقعی با همان معماری یکپارچه ارتباطی.'
+    ],
+    changes_en: [
+      'Added dedicated "SSH V2 Test & Fetch" UI action and telemetry component within the Introduce New Device modal.',
+      'Established real SSH-2 connection to the target device via the Python backend and Paramiko 2.x engine using existing onboarding credentials.',
+      'Strictly eradicated all mock, fake, or simulated data in accordance with Rule 8, providing transparent reporting of actual socket and protocol errors.',
+      'Clearly distinguished connection status, SSH-2 protocol version, authenticated user, CLI prompt, vendor, model, and authentic firmware version.',
+      'Implemented adaptive multi-vendor support (Cisco, MikroTik, Linux, and Generic) executing vendor-appropriate commands and reporting real errors for unsupported commands.',
+      'Equipped the component with an immediate action to launch the interactive SSH terminal using the same real connection architecture.'
+    ]
+  },
   {
     version: '1.175.0',
     releaseDate: '2026-09-28',

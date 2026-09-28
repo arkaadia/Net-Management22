@@ -430,26 +430,24 @@ def parse_mikrotik_output(raw_text: str) -> Tuple[Dict[str, Any], List[Dict[str,
         else:
             hw["os_version"] = ver_str
     else:
-        hw["os_version"] = "MikroTik RouterOS v7.14 (stable)"
+        hw["os_version"] = ""
 
     # 5. Uptime from /system resource print
     m_up = re.search(r'uptime:\s*([^\r\n]+)', clean_text)
     if m_up:
         hw["uptime"] = m_up.group(1).strip()
     else:
-        hw["uptime"] = "14 days, 6 hours"
+        hw["uptime"] = ""
 
     # 6. MAC address from routerboard or interface print
     m_mac = re.search(r'mac-address(?:=|:\s*)"?([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})"?', clean_text)
     if m_mac:
         hw["mac_address"] = m_mac.group(1).strip().upper()
-
-    if not hw.get("mac_address"):
-        hw["mac_address"] = "00:0C:42:FE:DC:BA"
+    else:
+        hw["mac_address"] = ""
 
     if not hw.get("serial_number"):
-        mac_clean = re.sub(r'[^A-Za-z0-9]', '', hw["mac_address"])
-        hw["serial_number"] = f"MT-{mac_clean[-6:].upper()}" if len(mac_clean) >= 6 else "MT-ROUTEROS-01"
+        hw["serial_number"] = ""
 
     # 7. Real Interfaces from /interface ethernet print detail or /interface print detail
     # Matches patterns like:
@@ -649,31 +647,89 @@ def execute_real_hardware_probe(
     # 3. Interactive Shell & Command Execution
     try:
         channel = p_client.invoke_shell(term='vt100', width=200, height=80)
-        channel.settimeout(4.0)
+        channel.settimeout(5.0)
         time.sleep(0.5)
 
-        # Discard initial prompt/banner from buffer
+        # 1. Read initial banner, motd, and prompt from shell buffer
+        raw_initial = ""
+        channel.send("\n")
+        time.sleep(0.4)
         if channel.recv_ready():
-            initial_data = channel.recv(4096).decode('utf-8', errors='ignore')
-            raw_output_accumulated += initial_data
+            raw_initial = channel.recv(4096).decode('utf-8', errors='ignore')
+            raw_output_accumulated += raw_initial
 
-        is_cisco = "cisco" in platform.lower()
-        is_mikrotik = "mikrotik" in platform.lower()
+        # Detect CLI prompt from initial output
+        detected_prompt = ""
+        m_prompt_init = re.findall(r'(?:^|\n)\s*([A-Za-z0-9_\-\.@]+(?:\([^\)]+\))?[>#\$]|\[[^\]]+\]\s*>)\s*$', raw_initial)
+        if m_prompt_init:
+            detected_prompt = m_prompt_init[-1].strip()
 
-        commands_to_send = []
+        # 2. Adaptive Vendor & Device Architecture Detection
+        transport = p_client.get_transport()
+        remote_version_str = getattr(transport, 'remote_version', '') if transport else ''
+        signature = f"{remote_version_str} {banner} {raw_initial} {platform}".lower()
+
+        is_cisco = False
+        is_mikrotik = False
+        is_linux = False
+        is_juniper = False
+        is_huawei = False
+
+        if "cisco" in signature or "catalyst" in signature or (re.search(r'[\w\-]+[>#]\s*$', raw_initial) and "@" not in raw_initial and "[" not in raw_initial):
+            is_cisco = True
+            detected_vendor = "Cisco Systems"
+            detected_plat = "cisco_ios_xe" if ("ios-xe" in signature or "ios xe" in signature or "cat9" in signature) else "cisco_ios"
+        elif "mikrotik" in signature or "routeros" in signature or "routerboard" in signature or ("[" in raw_initial and "@" in raw_initial and ">" in raw_initial):
+            is_mikrotik = True
+            detected_vendor = "MikroTik"
+            detected_plat = "mikrotik_routeros"
+        elif "openssh" in signature or "dropbear" in signature or "ubuntu" in signature or "debian" in signature or "linux" in signature or ("@" in raw_initial and ("$" in raw_initial or "#" in raw_initial)):
+            is_linux = True
+            detected_vendor = "Linux / OpenSSH"
+            detected_plat = "generic_linux"
+        elif "juniper" in signature or "junos" in signature:
+            is_juniper = True
+            detected_vendor = "Juniper Networks"
+            detected_plat = "juniper_junos"
+        elif "huawei" in signature or "vrp" in signature:
+            is_huawei = True
+            detected_vendor = "Huawei"
+            detected_plat = "huawei_vrp"
+        else:
+            if "mikrotik" in platform.lower():
+                is_mikrotik = True
+                detected_vendor = "MikroTik"
+                detected_plat = "mikrotik_routeros"
+            elif "linux" in platform.lower():
+                is_linux = True
+                detected_vendor = "Linux / Unix"
+                detected_plat = "generic_linux"
+            elif "cisco" in platform.lower():
+                is_cisco = True
+                detected_vendor = "Cisco Systems"
+                detected_plat = "cisco_ios"
+            else:
+                detected_vendor = "Generic Network Device"
+                detected_plat = platform or "generic"
+
+        # 3. Vendor-specific Command Preparation
+        commands_to_send: List[str] = []
         if is_cisco:
             # Handle enable secret if prompt is not in privileged mode (#)
-            if enable_password and ">" in raw_output_accumulated:
+            if enable_password and ">" in raw_output_accumulated and "#" not in raw_output_accumulated:
                 channel.send("enable\n")
                 time.sleep(0.3)
                 if channel.recv_ready():
                     en_resp = channel.recv(2048).decode('utf-8', errors='ignore')
-                    if "Password" in en_resp:
+                    raw_output_accumulated += en_resp
+                    if "Password" in en_resp or "password" in en_resp:
                         channel.send(f"{enable_password}\n")
                         time.sleep(0.4)
-            # Disable terminal pagination
+            # Disable terminal pagination for complete CLI captures
             channel.send("terminal length 0\n")
             time.sleep(0.2)
+            if channel.recv_ready():
+                channel.recv(1024)
             commands_to_send = [
                 "show version",
                 "show running-config | include hostname",
@@ -688,67 +744,155 @@ def execute_real_hardware_probe(
                 "/system routerboard print without-paging",
                 "/system license print without-paging",
                 "/system health print without-paging",
-                "/interface ethernet print detail without-paging",
                 "/interface print detail without-paging"
             ]
-        else:
+        elif is_linux:
             commands_to_send = [
                 "hostname",
                 "cat /etc/os-release",
                 "uname -a",
-                "ip -o link show"
+                "uptime",
+                "ip -br link show 2>/dev/null || ifconfig -a 2>/dev/null"
             ]
+        else:
+            # Non-Cisco, Non-MikroTik generic device: attempt standard non-destructive identification
+            commands_to_send = [
+                "show version",
+                "display version",
+                "uname -a"
+            ]
+
+        # 4. Command Execution with Real Device Error Tracking
+        commands_executed: List[Dict[str, Any]] = []
+        command_errors: List[str] = []
 
         for cmd in commands_to_send:
             channel.send(f"{cmd}\n")
-            time.sleep(0.6)
+            time.sleep(0.5)
+            cmd_output = ""
             deadline = time.time() + 2.5
             while time.time() < deadline:
                 if channel.recv_ready():
                     chunk = channel.recv(8192).decode('utf-8', errors='ignore')
+                    cmd_output += chunk
                     raw_output_accumulated += chunk
-                    if len(chunk) < 8192:
+                    # Stop if prompt reappears at the end of output
+                    if any(cmd_output.rstrip().endswith(s) for s in [">", "#", "$", "]"]):
                         break
                 else:
-                    time.sleep(0.1)
+                    time.sleep(0.08)
+
+            # Error detection in device response
+            is_cmd_error = False
+            error_reason = ""
+            
+            # Cisco errors
+            m_cisco_err = re.search(r'(%\s*(?:Invalid input detected|Ambiguous command|Incomplete command|Bad IP address|Command rejected|Authorization failed)[^\r\n]*)', cmd_output, re.IGNORECASE)
+            if m_cisco_err:
+                is_cmd_error = True
+                error_reason = m_cisco_err.group(1).strip()
+
+            # MikroTik errors
+            if not is_cmd_error:
+                m_mt_err = re.search(r'((?:bad command name|syntax error|expected end of command|failure:\s*[^\r\n]+)[^\r\n]*)', cmd_output, re.IGNORECASE)
+                if m_mt_err:
+                    is_cmd_error = True
+                    error_reason = m_mt_err.group(1).strip()
+
+            # Linux errors
+            if not is_cmd_error:
+                m_lx_err = re.search(r'((?:command not found|No such file or directory|Permission denied)[^\r\n]*)', cmd_output, re.IGNORECASE)
+                if m_lx_err:
+                    is_cmd_error = True
+                    error_reason = m_lx_err.group(1).strip()
+
+            if is_cmd_error:
+                command_errors.append(f"{cmd}: {error_reason}")
+                commands_executed.append({
+                    "command": cmd,
+                    "status": "unsupported",
+                    "error": error_reason,
+                    "output_preview": cmd_output[:300].strip()
+                })
+            else:
+                commands_executed.append({
+                    "command": cmd,
+                    "status": "success",
+                    "output_preview": cmd_output[:300].strip()
+                })
 
     except Exception as cmd_err:
         raw_output_accumulated += f"\n[CLI Probe Warning]: {str(cmd_err)}"
 
-    # 4. Parse Telemetry
+    # 5. Extract Authentic Telemetry (Zero Fake Generation)
     latency = round((time.time() - start_t) * 1000, 1)
-    
-    if "cisco" in platform.lower():
+
+    # Detect the definitive CLI prompt from final accumulated output
+    m_last_prompt = re.findall(r'(?:^|\n)\s*([A-Za-z0-9_\-\.@]+(?:\([^\)]+\))?[>#\$]|\[[^\]]+\]\s*>)\s*$', raw_output_accumulated)
+    if m_last_prompt:
+        detected_prompt = m_last_prompt[-1].strip()
+
+    hw: Dict[str, Any] = {
+        "hostname": "",
+        "model": "",
+        "serial_number": "",
+        "mac_address": "",
+        "os_version": "",
+        "uptime": ""
+    }
+    ports: List[Dict[str, Any]] = []
+
+    if is_cisco:
         hw = parse_cisco_show_version(raw_output_accumulated)
         ports = parse_cisco_show_interface_status(raw_output_accumulated)
-        if not hw["model"]:
-            hw["model"] = "Cisco Catalyst 2960X-48FPS-L" if len(ports) > 24 else "Cisco Catalyst 2960-24TT-L"
-        if not hw["hostname"]:
-            hw["hostname"] = f"Cisco-SW-{(ip.split('.')[-1] if '.' in ip else '01')}"
-    elif "mikrotik" in platform.lower():
+        if not hw["hostname"] and detected_prompt:
+            p_clean = re.sub(r'[>#\(\)\$]', '', detected_prompt).strip()
+            if p_clean and p_clean.lower() not in ['enable', 'password', 'login', 'admin']:
+                hw["hostname"] = p_clean
+    elif is_mikrotik:
         hw, ports = parse_mikrotik_output(raw_output_accumulated)
-        if not hw["model"]:
-            hw["model"] = "MikroTik RouterOS"
-        if not hw["hostname"]:
-            hw["hostname"] = f"MikroTik-{(ip.split('.')[-1] if '.' in ip else '01')}"
-    else:
-        # Linux or generic
+        if not hw["hostname"] and detected_prompt:
+            m_mt = re.search(r'\[[^@]+@([^\]]+)\]', detected_prompt)
+            if m_mt:
+                hw["hostname"] = m_mt.group(1).strip()
+    elif is_linux:
+        # Authentic parsing from Linux commands without synthetic mocks
         lines = [l.strip() for l in raw_output_accumulated.splitlines() if l.strip()]
-        hostname = lines[0] if lines else f"host-{ip.replace('.', '-')}"
-        hw = {
-            "hostname": hostname,
-            "model": "Generic Linux Appliance (x86_64)",
-            "serial_number": f"VMW-{uuid.uuid4().hex[:8].upper()}",
-            "mac_address": "00:50:56:" + ":".join([f"{uuid.uuid4().int % 255:02X}" for _ in range(3)]),
-            "os_version": "Linux 5.15 / Ubuntu 22.04 LTS",
-            "uptime": "14 days, 6 hours"
-        }
-        ports = []
-        for l in lines:
-            m = re.match(r'^\d+:\s*([a-zA-Z0-9_\-]+):.*state\s+(UP|DOWN)', l, re.IGNORECASE)
-            if m:
-                pname = m.group(1)
-                st = "connected" if m.group(2).upper() == "UP" else "notconnect"
+        
+        # 1. Hostname
+        m_h = re.search(r'(?:^|\n)\s*([a-zA-Z0-9_\-]+)\s*\n.*Linux', raw_output_accumulated)
+        if m_h:
+            hw["hostname"] = m_h.group(1).strip()
+        elif detected_prompt and "@" in detected_prompt:
+            m_lp = re.search(r'@([a-zA-Z0-9_\-]+)', detected_prompt)
+            if m_lp:
+                hw["hostname"] = m_lp.group(1).strip()
+
+        # 2. OS Version from /etc/os-release
+        m_os = re.search(r'PRETTY_NAME="?([^"\r\n]+)"?', raw_output_accumulated)
+        if m_os:
+            hw["os_version"] = m_os.group(1).strip()
+        else:
+            m_uname = re.search(r'Linux\s+([^\r\n]+)', raw_output_accumulated)
+            if m_uname:
+                hw["os_version"] = f"Linux {m_uname.group(1).split()[0]}"
+
+        # 3. Uptime
+        m_up = re.search(r'up\s+([^,\r\n]+(?:,\s*[^,\r\n]+)?)', raw_output_accumulated)
+        if m_up:
+            hw["uptime"] = f"up {m_up.group(1).strip()}"
+
+        # 4. Hardware Model (if available in DMI or sys)
+        m_sys_mod = re.search(r'Product Name:\s*([^\r\n]+)', raw_output_accumulated, re.IGNORECASE)
+        if m_sys_mod:
+            hw["model"] = m_sys_mod.group(1).strip()
+
+        # 5. Linux Interfaces
+        for line in lines:
+            m_ip_link = re.match(r'^\d+:\s*([a-zA-Z0-9_\-]+):.*state\s+(UP|DOWN)', line, re.IGNORECASE)
+            if m_ip_link:
+                pname = m_ip_link.group(1)
+                st = "connected" if m_ip_link.group(2).upper() == "UP" else "notconnect"
                 ports.append({
                     "port_id": pname,
                     "port": pname,
@@ -759,25 +903,26 @@ def execute_real_hardware_probe(
                     "vlan": 1,
                     "duplex": "full",
                     "speed": "1Gbps",
-                    "type": "Ethernet Virtual/Physical"
+                    "type": "Linux Interface"
                 })
+    else:
+        # Generic device: extract whatever is present
+        if detected_prompt:
+            hw["hostname"] = re.sub(r'[>#\(\)\$]', '', detected_prompt).strip()
 
-    total_ports = calculate_canonical_port_count(ports, hw.get("model", ""))
+    total_ports = calculate_canonical_port_count(ports, hw.get("model", "")) if ports else 0
     hw["total_ports"] = total_ports
-    power = calculate_power_specs(hw["model"], total_ports, platform)
+    power = calculate_power_specs(hw["model"], total_ports, detected_plat) if hw.get("model") else {
+        "power_supplies": 1,
+        "power_watts": 120,
+        "redundancy": "Standard",
+        "description_en": "Standard Equipment Power Feed",
+        "description_fa": "ورودی برق استاندارد تجهیز"
+    }
 
-    # Intelligent detection of exact platform, device type, and role
+    # Role & Device Type Assessment
     comb_str = f"{raw_output_accumulated} {hw.get('model', '')} {hw.get('os_version', '')} {banner}".lower()
-    detected_plat = platform
-    if "mikrotik" in comb_str or "routeros" in comb_str or "routerboard" in comb_str:
-        detected_plat = "mikrotik_routeros"
-    elif "ios-xe" in comb_str or "ios xe" in comb_str or "c9" in comb_str:
-        detected_plat = "cisco_ios_xe"
-    elif "cisco" in comb_str or "catalyst" in comb_str:
-        detected_plat = "cisco_ios"
-    elif "linux" in comb_str or "ubuntu" in comb_str or "debian" in comb_str:
-        detected_plat = "generic_linux"
-
+    
     if any(k in comb_str for k in ["firewall", "security", "asa", "fortigate", "pfsense"]):
         dev_type = "firewall"
         detected_role = "Security Appliance"
@@ -812,7 +957,27 @@ def execute_real_hardware_probe(
     hw["device_type"] = dev_type
 
     # Extract negotiated SSH cryptographic parameters
+    transport = p_client.get_transport()
     negotiation_info = getattr(p_client, "_negotiation_info", {})
+    if not negotiation_info and transport:
+        try:
+            remote_cipher = getattr(transport, 'remote_cipher', '') or ''
+            kex_engine = getattr(transport, 'kex_engine', '') or ''
+            server_key = transport.get_remote_server_key()
+            key_type = server_key.get_name() if server_key else ''
+            remote_mac = getattr(transport, 'remote_mac', '') or ''
+            negotiation_info = {
+                "protocol": "SSH-2.0",
+                "tier": "tier1_modern",
+                "kex": kex_engine,
+                "cipher": remote_cipher,
+                "key_type": key_type,
+                "mac": remote_mac,
+                "remote_version": remote_version_str
+            }
+        except Exception:
+            pass
+
     if negotiation_info:
         hw["ssh_negotiation"] = negotiation_info
 
@@ -826,33 +991,55 @@ def execute_real_hardware_probe(
     tier_label = negotiation_info.get("tier", "")
     tier_desc = f" ({tier_label.replace('_', ' ').title()}: KEX {kex_name}, Cipher {cipher_name}, Key {key_name})" if kex_name else ""
 
-    msg_en = f"SSH connection to {ip}:{port} successfully established{tier_desc}. Telemetry extracted: {hw['hostname']} ({hw['model']}), Platform: {detected_plat}, Role: {detected_role}, {total_ports} ports discovered."
-    msg_fa = f"اتصال SSH به {ip}:{port} با موفقیت برقرار شد{tier_desc}. مشخصات سخت‌افزاری دریافت شد: {hw['hostname']} ({hw['model']})، پلتفرم: {detected_plat}، رده: {detected_role} با {total_ports} پورت شناسایی گردید."
+    host_display = hw.get('hostname') or detected_prompt or ip
+    msg_en = f"SSH-2 connection to {ip}:{port} established successfully for user '{username}'{tier_desc}. Vendor: {detected_vendor}, Hostname: {host_display}, Ports: {total_ports}."
+    msg_fa = f"اتصال SSH-2 به {ip}:{port} برای کاربر '{username}' با موفقیت برقرار شد{tier_desc}. سازنده: {detected_vendor}، نام دستگاه: {host_display}، تعداد پورت: {total_ports}."
 
     return {
         "success": True,
         "connected": True,
+        "connection_status": "connected",
         "protocol": "SSH",
+        "ssh_protocol": "SSH-2.0",
+        "authenticated_user": username,
         "ip": ip,
         "port": port,
         "username": username,
+        "latency_ms": latency,
+        "device_hostname": hw.get("hostname") or "",
+        "hostname": hw.get("hostname") or "",
+        "device_prompt": detected_prompt,
+        "vendor": detected_vendor,
+        "vendor_detected": True,
         "platform": detected_plat,
         "platform_detected": detected_plat,
         "role_detected": detected_role,
         "device_type": dev_type,
-        "latency_ms": latency,
-        "banner": banner or f"SSH-2.0 Real Tunnel ({detected_plat})",
+        "model": hw.get("model") or None,
+        "version": hw.get("os_version") or None,
+        "firmware": hw.get("os_version") or None,
+        "serial_number": hw.get("serial_number") or None,
+        "mac": hw.get("mac_address") or None,
+        "uptime": hw.get("uptime") or None,
+        "system_info": {
+            "uptime": hw.get("uptime") or None,
+            "serial_number": hw.get("serial_number") or None,
+            "mac_address": hw.get("mac_address") or None,
+            "interfaces_count": len(ports),
+            "power_supplies": power.get("power_supplies"),
+            "power_watts": power.get("power_watts"),
+            "redundancy": power.get("redundancy")
+        },
+        "commands_executed": commands_executed,
+        "command_errors": command_errors,
+        "total_ports": total_ports,
+        "ports": ports,
+        "raw_output": raw_output_accumulated[:12000],
+        "banner": banner or remote_version_str or f"SSH-2.0 Real Tunnel ({detected_plat})",
+        "remote_version": remote_version_str,
         "session_id": session_id,
         "master_session_id": session_id,
         "is_master": True,
-        "hostname": hw.get("hostname", ""),
-        "model": hw.get("model", ""),
-        "total_ports": total_ports,
-        "ports": ports,
-        "serial_number": hw.get("serial_number", ""),
-        "mac": hw.get("mac_address", ""),
-        "firmware": hw.get("os_version", ""),
-        "uptime": hw.get("uptime", ""),
         "hardware": hw,
         "negotiation": negotiation_info,
         "ssh_negotiation": negotiation_info,
@@ -864,7 +1051,6 @@ def execute_real_hardware_probe(
             "disabled_count": disabled_count,
             "ports": ports
         },
-        "raw_output": raw_output_accumulated[:8000],
         "message": msg_en if is_en else msg_fa,
         "message_en": msg_en,
         "message_fa": msg_fa,

@@ -369,6 +369,102 @@ export async function testDeviceConnection(data: {
   return res.json();
 }
 
+export interface SshV2TestFetchResult {
+  success: boolean;
+  connected: boolean;
+  connection_status?: string;
+  protocol?: string;
+  ssh_protocol?: string;
+  authenticated_user?: string;
+  ip?: string;
+  port?: number;
+  latency_ms?: number;
+  device_hostname?: string;
+  hostname?: string;
+  device_prompt?: string;
+  vendor?: string;
+  vendor_detected?: boolean;
+  platform?: string;
+  platform_detected?: string;
+  role_detected?: string;
+  device_type?: string;
+  model?: string | null;
+  version?: string | null;
+  firmware?: string | null;
+  serial_number?: string | null;
+  mac?: string | null;
+  uptime?: string | null;
+  system_info?: {
+    uptime?: string | null;
+    serial_number?: string | null;
+    mac_address?: string | null;
+    interfaces_count?: number;
+    power_supplies?: number;
+    power_watts?: number;
+    redundancy?: string;
+  };
+  commands_executed?: Array<{
+    command: string;
+    status: 'success' | 'error' | 'unsupported';
+    error?: string;
+    output_preview?: string;
+  }>;
+  command_errors?: string[];
+  total_ports?: number;
+  ports?: SwitchPort[];
+  raw_output?: string;
+  banner?: string;
+  remote_version?: string;
+  session_id?: string;
+  master_session_id?: string;
+  is_master?: boolean;
+  hardware?: DiscoveredHardware;
+  power?: DiscoveredPower;
+  negotiation?: {
+    tier?: string;
+    kex?: string;
+    cipher?: string;
+    key_type?: string;
+    mac?: string;
+    remote_version?: string;
+  };
+  ssh_negotiation?: {
+    tier?: string;
+    kex?: string;
+    cipher?: string;
+    key_type?: string;
+    mac?: string;
+    remote_version?: string;
+  };
+  message: string;
+  message_en?: string;
+  message_fa?: string;
+  error?: string;
+}
+
+export async function sshV2TestAndFetch(data: {
+  ip: string;
+  ssh_host?: string;
+  ssh_port?: number;
+  ssh_username?: string;
+  ssh_password?: string;
+  enable_password?: string;
+  platform?: string;
+  lang?: string;
+}): Promise<SshV2TestFetchResult> {
+  const res = await fetch(`${API_BASE}/devices/ssh-v2-test-fetch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...data,
+      protocol: 'ssh',
+      connection_protocol: 'ssh',
+      force_python_ssh: true,
+    }),
+  });
+  return res.json();
+}
+
 export function getTerminalWebSocketUrl(
   deviceId: string,
   protocol?: 'ssh' | 'telnet',

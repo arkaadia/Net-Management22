@@ -33,13 +33,14 @@ import {
   BookmarkPlus,
 } from 'lucide-react';
 import { Device, DeviceType, DevicePlatform, ConnectionMode, SwitchPort, ConfigTemplate, DeviceWebConfig, isMikroTikDevice } from '../types';
-import { fetchTemplates, testDeviceConnection, pingHost, fetchDevices } from '../services/api';
+import { fetchTemplates, testDeviceConnection, pingHost, fetchDevices, sshV2TestAndFetch, SshV2TestFetchResult } from '../services/api';
 import { useLanguage } from '../i18n';
 import { getDevicePortComment } from '../data/portSpecs';
 import { CiscoTerminalModal } from './CiscoTerminalModal';
 import { MikroTikTerminalModal } from './MikroTikTerminalModal';
 import { FieldInfoTooltip } from './common/FieldInfoTooltip';
 import { VaultPasswordPickerModal } from './vault/VaultPasswordPickerModal';
+import { SshV2TestResultCard } from './ssh-v2/SshV2TestResultCard';
 
 export interface AddDeviceModalProps {
   isOpen: boolean;
@@ -142,6 +143,8 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
 
   const [isTestingSsh, setIsTestingSsh] = useState(false);
   const [sshTestResult, setSshTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null);
+  const [isTestingSshV2, setIsTestingSshV2] = useState(false);
+  const [sshV2Result, setSshV2Result] = useState<SshV2TestFetchResult | null>(null);
   const [isTestingPing, setIsTestingPing] = useState(false);
   const [pingTestResult, setPingTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null);
 
@@ -261,6 +264,8 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
     setIsPortsExpanded(false);
     setDiscoverySource(null);
     setSshTestResult(null);
+    setSshV2Result(null);
+    setIsTestingSshV2(false);
     setPingTestResult(null);
     setError(null);
     setSelectedTemplateId('');
@@ -636,6 +641,101 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
       });
     } finally {
       setIsTestingSsh(false);
+    }
+  };
+
+  const handleSshV2TestFetch = async () => {
+    const targetHost = (sshHost.trim() || ip.trim());
+    if (!targetHost) {
+      setError(isEn ? 'Please enter a target host or IP for SSH V2 connection' : 'لطفاً ابتدا آدرس IP یا نام هاست را وارد کنید');
+      return;
+    }
+    try {
+      setIsTestingSshV2(true);
+      setSshV2Result(null);
+      setError(null);
+
+      const res = await sshV2TestAndFetch({
+        ip: targetHost,
+        ssh_host: targetHost,
+        ssh_port: Number(sshPort) || 22,
+        ssh_username: sshUsername.trim() || 'admin',
+        ssh_password: sshPassword,
+        enable_password: enablePassword,
+        platform,
+        lang: isEn ? 'en' : 'fa',
+      });
+
+      setSshV2Result(res);
+
+      if (res.success && res.connected) {
+        // Auto-fill onboarding form with authentic telemetry (no mock fallbacks)
+        if (targetHost && !ip) {
+          setIp(targetHost);
+        }
+        if (res.device_hostname || res.hostname) {
+          setName(res.device_hostname || res.hostname || '');
+        }
+        if (res.model) {
+          setModel(res.model);
+        }
+        if (res.serial_number) {
+          setSerialNumber(res.serial_number);
+        }
+        if (res.mac) {
+          setMac(res.mac);
+        }
+        if (res.version || res.firmware) {
+          setFirmware(res.version || res.firmware || '');
+        }
+        if (res.uptime) {
+          setUptime(res.uptime);
+        }
+        if (res.platform_detected) {
+          setPlatform(res.platform_detected as DevicePlatform);
+        }
+        if (res.device_type && ['switch', 'router', 'access_point', 'firewall'].includes(res.device_type)) {
+          setType(res.device_type as DeviceType);
+        }
+        if (res.role_detected) {
+          setRole(res.role_detected);
+        }
+        if (res.power?.power_supplies) {
+          setPowerSupplies(res.power.power_supplies);
+        }
+        if (res.power?.power_watts) {
+          setPowerWatts(res.power.power_watts);
+        }
+        if (res.master_session_id) {
+          setMasterSessionId(res.master_session_id);
+        }
+        if (res.ports && res.ports.length > 0) {
+          setDiscoveredPorts(res.ports);
+          setTotalPorts(res.ports.length);
+          setIsPortsExpanded(true);
+        } else if (res.total_ports) {
+          setTotalPorts(res.total_ports);
+        }
+        setIsLockedByDiscovery(true);
+        setDiscoverySource(isEn ? 'Paramiko 2.x (SSH-2)' : 'پارامیکو ۲ (SSH-2)');
+      }
+    } catch (err: any) {
+      setSshV2Result({
+        success: false,
+        connected: false,
+        protocol: 'SSH',
+        ssh_protocol: 'SSH-2.0',
+        authenticated_user: sshUsername.trim() || 'admin',
+        ip: targetHost,
+        port: Number(sshPort) || 22,
+        latency_ms: 0,
+        message: isEn
+          ? `SSH-2 connection error: ${err.message || 'Failed to connect'}`
+          : `خطای اتصال SSH-2: ${err.message || 'عدم برقراری ارتباط'}`,
+        error: err.message,
+      });
+    } finally {
+      setIsTestingSshV2(false);
     }
   };
 
@@ -1598,33 +1698,78 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
                       Telnet
                     </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleTestSsh(false)}
-                    disabled={isTestingSsh}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold transition shadow-xs disabled:opacity-50 cursor-pointer"
-                  >
-                    {isTestingSsh ? (
-                      <>
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                        <span>{isEn ? 'Testing & Fetching Data...' : 'در حال تست و دریافت مشخصات...'}</span>
-                      </>
-                    ) : (
-                      <>
-                        <Terminal className="w-3 h-3" />
-                        <span>
-                          {connectionProtocol === 'ssh'
-                            ? (isEn ? 'Test SSH & Fetch Data' : 'تست SSH و دریافت مشخصات')
-                            : (isEn ? 'Test Telnet & Fetch Data' : 'تست Telnet و دریافت مشخصات')}
-                        </span>
-                      </>
-                    )}
-                  </button>
+                  {connectionProtocol === 'ssh' ? (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSshV2TestFetch}
+                        disabled={isTestingSshV2}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold transition shadow-xs disabled:opacity-50 cursor-pointer"
+                      >
+                        {isTestingSshV2 ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>{isEn ? 'SSH V2 Testing & Fetching...' : 'در حال تست و دریافت مشخصات SSH V2...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Zap className="w-3.5 h-3.5 text-amber-300" />
+                            <span>{isEn ? 'SSH V2 Test & Fetch' : 'تست و دریافت اطلاعات SSH V2'}</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleOpenDirectTerminal}
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition cursor-pointer ${
+                          isLightMode
+                            ? 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                            : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                        }`}
+                        title={isEn ? 'Open Interactive SSH Terminal' : 'باز کردن ترمینال تعاملی SSH'}
+                      >
+                        <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>{isEn ? 'Interactive Terminal' : 'ترمینال تعاملی'}</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleTestSsh(false)}
+                      disabled={isTestingSsh}
+                      className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold transition shadow-xs disabled:opacity-50 cursor-pointer"
+                    >
+                      {isTestingSsh ? (
+                        <>
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          <span>{isEn ? 'Testing & Fetching Data...' : 'در حال تست و دریافت مشخصات...'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Terminal className="w-3 h-3" />
+                          <span>{isEn ? 'Test Telnet & Fetch Data' : 'تست Telnet و دریافت مشخصات'}</span>
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* SSH / Telnet Test Result Banner */}
-              {sshTestResult && (
+              {/* SSH V2 Dedicated Result Card */}
+              {sshV2Result && (
+                <div className="my-2">
+                  <SshV2TestResultCard
+                    result={sshV2Result}
+                    isLightMode={isLightMode}
+                    isEn={isEn}
+                    onOpenTerminal={handleOpenDirectTerminal}
+                  />
+                </div>
+              )}
+
+              {/* SSH / Telnet Test Result Banner (Legacy / Telnet) */}
+              {!sshV2Result && sshTestResult && (
                 <div
                   className={`p-2.5 rounded-lg flex items-start gap-2 text-xs ${
                     sshTestResult.success

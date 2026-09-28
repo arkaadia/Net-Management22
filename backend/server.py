@@ -2731,7 +2731,7 @@ class NetworkAPIHandler(BaseHTTPRequestHandler):
             })
             return
 
-        if path == "/api/devices/test-connection":
+        if path in ["/api/devices/test-connection", "/api/devices/ssh-v2-test-fetch"]:
             # Test and establish REAL connection to device based on exact registered credentials and platform
             ip = body.get("ssh_host", body.get("ip", body.get("host", ""))).strip()
             proto = (body.get("protocol") or body.get("connection_protocol") or "ssh").lower()
@@ -2740,7 +2740,7 @@ class NetworkAPIHandler(BaseHTTPRequestHandler):
             user = body.get("ssh_username", body.get("username", "admin")).strip()
             pwd = body.get("ssh_password", body.get("password", "")).strip()
             enable_pwd = body.get("enable_password", "").strip()
-            platform = body.get("platform", "cisco_ios_xe")
+            platform = body.get("platform", "cisco_ios")
             lang = (body.get("lang") or ("en" if "en" in self.headers.get("Accept-Language", "").lower() else "fa")).lower()
             is_en = (lang == "en")
 
@@ -2749,49 +2749,53 @@ class NetworkAPIHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"success": False, "error": err_msg, "message": err_msg})
                 return
 
-            driver = get_driver(platform, "ssh")
             start_t = time.time()
 
-            if proto == "ssh" and execute_real_hardware_probe:
-                probe_res = execute_real_hardware_probe(
-                    ip=ip,
-                    port=port,
-                    username=user,
-                    password=pwd,
-                    enable_password=enable_pwd,
-                    protocol=proto,
-                    platform=platform,
-                    lang=lang
-                )
+            if proto == "ssh":
+                if execute_real_hardware_probe:
+                    probe_res = execute_real_hardware_probe(
+                        ip=ip,
+                        port=port,
+                        username=user,
+                        password=pwd,
+                        enable_password=enable_pwd,
+                        protocol=proto,
+                        platform=platform,
+                        lang=lang
+                    )
 
-                if probe_res.get("success"):
-                    session_id = probe_res.get("session_id")
-                    p_client = probe_res.pop("paramiko_client", None)
-                    if session_id and p_client:
-                        with ACTIVE_SESSIONS_LOCK:
-                            ACTIVE_SSH_SESSIONS[session_id] = {
-                                "session_id": session_id,
-                                "sessionId": session_id,
-                                "host": ip,
-                                "port": port,
-                                "username": user,
-                                "paramiko_client": p_client,
-                                "socket": None,
-                                "status": "connected",
-                                "connected_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                "platform": platform,
-                                "device_id": body.get("device_id", ""),
-                                "role": "mother_connection",
-                                "telemetry": {
-                                    "hardware": probe_res.get("hardware"),
-                                    "power": probe_res.get("power"),
-                                    "ports_count": len(probe_res.get("ports") or [])
+                    if probe_res.get("success"):
+                        session_id = probe_res.get("session_id")
+                        p_client = probe_res.pop("paramiko_client", None)
+                        if session_id and p_client:
+                            with ACTIVE_SESSIONS_LOCK:
+                                ACTIVE_SSH_SESSIONS[session_id] = {
+                                    "session_id": session_id,
+                                    "sessionId": session_id,
+                                    "host": ip,
+                                    "port": port,
+                                    "username": user,
+                                    "paramiko_client": p_client,
+                                    "socket": None,
+                                    "status": "connected",
+                                    "connected_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    "platform": platform,
+                                    "device_id": body.get("device_id", ""),
+                                    "role": "mother_connection",
+                                    "telemetry": {
+                                        "hardware": probe_res.get("hardware"),
+                                        "power": probe_res.get("power"),
+                                        "ports_count": len(probe_res.get("ports") or [])
+                                    }
                                 }
-                            }
-                    self._send_json(200, probe_res)
-                    return
+                        self._send_json(200, probe_res)
+                        return
+                    else:
+                        self._send_json(200, probe_res)
+                        return
                 else:
-                    self._send_json(200, probe_res)
+                    err_msg = "Paramiko 2.x SSH engine is not initialized on backend" if is_en else "موتور SSH پارامیکو ۲ در بک‌اند راه‌اندازی نشده است"
+                    self._send_json(500, {"success": False, "connected": False, "error": err_msg, "message": err_msg})
                     return
 
             connected = False
