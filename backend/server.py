@@ -3940,6 +3940,15 @@ def start_websocket_server(ws_port: int):
                 except Exception:
                     pass
 
+            def on_lifecycle_event(evt: dict):
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        websocket.send(json.dumps({"type": "lifecycle_event", "event": evt})),
+                        loop
+                    )
+                except Exception as e:
+                    print(f"[WS-BACKEND-EVENT-ERR] {e}")
+
             session = NetworkTerminalSession(
                 device_id=device_id,
                 host=host,
@@ -3952,7 +3961,8 @@ def start_websocket_server(ws_port: int):
                 cols=cols,
                 rows=rows,
                 on_data_callback=on_data_received,
-                on_close_callback=on_session_closed
+                on_close_callback=on_session_closed,
+                on_event_callback=on_lifecycle_event
             )
             terminal_session_manager.register_session(session)
 
@@ -4013,6 +4023,11 @@ def start_websocket_server(ws_port: int):
                 msg_type = msg.get("type", "input")
                 if msg_type == "ping":
                     await websocket.send(json.dumps({"type": "pong", "timestamp": int(time.time() * 1000)}))
+                elif msg_type == "get_lifecycle_events":
+                    await websocket.send(json.dumps({
+                        "type": "lifecycle_events_history",
+                        "events": session.lifecycle_events
+                    }))
                 elif msg_type in ("input", "stdin"):
                     data_str = msg.get("data", "")
                     if data_str:

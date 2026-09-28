@@ -298,6 +298,7 @@ class NetworkTerminalSession:
         on_data_callback: Optional[Callable[[str], Any]] = None,
         on_close_callback: Optional[Callable[[], Any]] = None,
         on_status_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        on_event_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ):
         self.session_id = f"term-{uuid.uuid4().hex[:8]}"
         self.device_id = device_id
@@ -316,6 +317,8 @@ class NetworkTerminalSession:
         self.on_data_callback = on_data_callback
         self.on_close_callback = on_close_callback
         self.on_status_callback = on_status_callback
+        self.on_event_callback = on_event_callback
+        self.lifecycle_events = []
 
         self.status = "OPEN"  # OPEN, CONNECTING, CONNECTED, ACTIVE, FAILED, CLOSING, CLOSED
         self.created_at = time.time()
@@ -372,10 +375,44 @@ class NetworkTerminalSession:
             except Exception as e:
                 print(f"[NetworkTerminal] Status callback error: {e}")
 
+    def emit_event(
+        self,
+        stage: str,
+        title: str,
+        detail: str,
+        level: str = "info",
+        metadata: Optional[Dict[str, Any]] = None,
+        title_en: Optional[str] = None
+    ):
+        """Dispatches structured connection lifecycle event and retains it in session history."""
+        evt = {
+            "id": f"evt-{uuid.uuid4().hex[:8]}",
+            "timestamp": int(time.time() * 1000),
+            "stage": stage,
+            "title": title,
+            "titleEn": title_en or title,
+            "detail": detail,
+            "level": level,
+            "metadata": metadata or {}
+        }
+        self.lifecycle_events.append(evt)
+        if self.on_event_callback:
+            try:
+                self.on_event_callback(evt)
+            except Exception as e:
+                print(f"[NetworkTerminal] Event callback error: {e}")
+
     def connect(self) -> bool:
         """Establishes real connection to the device. Returns True if connected, False on failure."""
         self.status = "CONNECTING"
         self.notify_status("connecting", message=f"Initiating real {self.protocol.upper()} connection to {self.host}:{self.port}...")
+        self.emit_event(
+            "ssh_start" if self.protocol != "telnet" else "ws_connect",
+            f"{self.protocol.upper()} Connection Started",
+            f"Initiating real {self.protocol.upper()} socket connection to {self.host}:{self.port} (user: {self.username})",
+            "info",
+            {"host": self.host, "port": self.port, "protocol": self.protocol, "platform": self.platform}
+        )
         start_t = time.time()
 
         if self.protocol == "telnet":
@@ -499,6 +536,9 @@ class NetworkTerminalSession:
             return False
 
         term_name = "xterm-256color" if self.is_cisco else ("vt100" if self.is_mikrotik else "xterm")
+        def handle_sub_event(stage, title, detail, level="info", meta=None):
+            self.emit_event(stage, title, detail, level, meta)
+
         channel, transport, client, info, err = open_adaptive_shell_channel(
             hostname=self.host,
             port=self.port,
@@ -509,7 +549,8 @@ class NetworkTerminalSession:
             term_name=term_name,
             timeout=6.0,
             on_status_msg=self.on_data_callback,
-            platform=self.platform
+            platform=self.platform,
+            on_event=handle_sub_event
         )
 
         first_error = None
@@ -536,6 +577,17 @@ class NetworkTerminalSession:
             self.diagnostic_category = cat
             self.diagnostic_data = diag_dict
 
+            # Emit accurate diagnostic lifecycle failure event
+            err_lower = (self.error_message or "").lower()
+            if "timed out" in err_lower or "timeout" in err_lower or "unreachable" in err_lower:
+                self.emit_event("timeout", "Connection Timed Out", self.error_message, "error", diag_dict)
+            elif "auth" in err_lower or "denied" in err_lower:
+                self.emit_event("authentication_failure", "Authentication Failed", self.error_message, "error", diag_dict)
+            elif "refused" in err_lower:
+                self.emit_event("exception", "Connection Refused", self.error_message, "error", diag_dict)
+            else:
+                self.emit_event("exception", "SSH Connection Failed", self.error_message, "error", diag_dict)
+
             self._send_error_to_terminal(ansi_report)
             self.notify_status(
                 "failed",
@@ -553,6 +605,14 @@ class NetworkTerminalSession:
         self.connected_at = time.time()
         self.last_activity = time.time()
         self.status = "CONNECTED"
+
+        self.emit_event(
+            "shell_creation",
+            "Interactive Shell Active",
+            f"PTY {term_name} interactive channel ready in {self.latency_ms}ms ({'Legacy Cisco Suite' if self.used_legacy_algorithms else 'Modern Suite'})",
+            "success",
+            {"latency_ms": self.latency_ms, "legacy": self.used_legacy_algorithms, "tier": info.get("tier")}
+        )
 
         # Read banner if present
         try:
@@ -596,6 +656,7 @@ class NetworkTerminalSession:
             return
 
         chan.settimeout(0.05)
+        first_data_chunk = True
 
         while not self._stop_event.is_set() and chan and not chan.closed:
             try:
@@ -619,6 +680,15 @@ class NetworkTerminalSession:
                     self.last_activity = time.time()
                     text = data.decode("utf-8", errors="replace")
                     print(f"[SSH-PTY-RAW-RECV] session={self.session_id} bytes={raw_len} preview={repr(text[:120])}")
+                    if first_data_chunk:
+                        first_data_chunk = False
+                        self.emit_event(
+                            "output_reception",
+                            "Output Reception",
+                            f"Received initial terminal response from device ({raw_len} bytes)",
+                            "success",
+                            {"bytes": raw_len}
+                        )
                     if self.is_cisco and ("--More--" in text or "-- More --" in text):
                         try:
                             chan.send(" ")
@@ -779,6 +849,14 @@ class NetworkTerminalSession:
         try:
             encoded_bytes = data.encode("utf-8")
             print(f"[SSH-PTY-INPUT-RAW] session={self.session_id} protocol={self.protocol} bytes={len(encoded_bytes)} data={repr(data)}")
+            if len(data) > 0:
+                self.emit_event(
+                    "command_transmission",
+                    "Command Transmission",
+                    f"Transmitted data ({len(data)} characters) to device shell",
+                    "info",
+                    {"chars": len(data)}
+                )
             if self.protocol == "ssh" and self._ssh_channel and not self._ssh_channel.closed:
                 self._ssh_channel.send(encoded_bytes)
                 return True
@@ -808,6 +886,12 @@ class NetworkTerminalSession:
 
         self.status = "CLOSING"
         self._stop_event.set()
+        self.emit_event(
+            "disconnect",
+            "Session Disconnected",
+            f"Terminal session {self.session_id} disconnected for {self.host}:{self.port}",
+            "warning"
+        )
         self._cleanup_resources()
         self.status = "CLOSED"
 

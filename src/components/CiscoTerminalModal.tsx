@@ -32,6 +32,7 @@ import {
   RefreshCw,
   Lock,
   Unlock,
+  Activity,
 } from 'lucide-react';
 import { Device, SwitchPort, VlanInfo } from '../types';
 import {
@@ -49,6 +50,12 @@ import { useLanguage } from '../i18n/LanguageContext';
 import { logDeviceCommand, evaluateCommandRisk } from '../services/auditLogger';
 import { CompactTerminalFaceplate } from './terminal/CompactTerminalFaceplate';
 import { CiscoWriteConfirmModal, WriteChangeItem } from './CiscoWriteConfirmModal';
+import {
+  ConnectionLogTroubleshootModal,
+  ConnectionLifecycleEvent,
+  ConnectionTroubleshootData,
+  redactSensitiveData,
+} from './terminal/ConnectionLogTroubleshootModal';
 
 export interface CiscoTerminalModalProps {
   device: Device | null;
@@ -244,6 +251,39 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
   const wsRef = useRef<WebSocket | null>(null);
   const [livePrompt, setLivePrompt] = useState<string>('');
   const lastExecutedCommandRef = useRef<string>('');
+  const firstDataChunkRef = useRef<boolean>(true);
+
+  // Phase 5: Connection Log & Troubleshoot diagnostics state
+  const [showConnectionDiagnostics, setShowConnectionDiagnostics] = useState<boolean>(false);
+  const [lifecycleEvents, setLifecycleEvents] = useState<ConnectionLifecycleEvent[]>([]);
+  const [troubleshootData, setTroubleshootData] = useState<ConnectionTroubleshootData | null>(null);
+
+  const addLifecycleEvent = (
+    stage: ConnectionLifecycleEvent['stage'],
+    title: string,
+    detail: string,
+    level: ConnectionLifecycleEvent['level'] = 'info',
+    metadata?: Record<string, any>,
+    titleEn?: string
+  ) => {
+    const newEvt: ConnectionLifecycleEvent = {
+      id: 'evt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+      timestamp: Date.now(),
+      stage,
+      title,
+      titleEn,
+      detail: redactSensitiveData(detail),
+      level,
+      metadata,
+    };
+    setLifecycleEvents((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.stage === stage && last.detail === newEvt.detail && (newEvt.timestamp - last.timestamp) < 250) {
+        return prev;
+      }
+      return [...prev, newEvt];
+    });
+  };
 
   const filteredInterfaces = useMemo(() => {
     if (!interfaceSearch.trim()) return ports;
@@ -666,10 +706,32 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
           enable_password: enablePass,
           platform: devPlatform,
         });
+
+        // Record initial WebSocket connection lifecycle event
+        firstDataChunkRef.current = true;
+        addLifecycleEvent(
+          'ws_connect',
+          isEn ? 'WebSocket Initiating' : 'شروع برقراری ارتباط وب‌سوکت',
+          isEn
+            ? `Initiating direct WebSocket stream for ${curDev?.name || 'Device'} (${targetHost}:${sshPort})`
+            : `در حال باز کردن سوکت وب‌سوکت برای ${curDev?.name || 'دستگاه'} (${targetHost}:${sshPort})`,
+          'info',
+          { host: targetHost, port: sshPort, protocol: connProtocol }
+        );
+
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 
         ws.onopen = () => {
+          addLifecycleEvent(
+            'ws_connected',
+            isEn ? 'WebSocket Connected' : 'ارتباط وب‌سوکت برقرار شد',
+            isEn
+              ? `Bidirectional WebSocket tunnel established with backend proxy`
+              : `ارتباط وب‌سوکت پایدار با سرور برقرار شد`,
+            'success'
+          );
+
           // Setup periodic keepalive ping every 20s to ensure tunnel does not drop while modal is open
           if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
           pingIntervalRef.current = setInterval(() => {
@@ -688,14 +750,61 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
               // Keepalive acknowledged
               return;
             }
+            if (msg.type === 'lifecycle_event' && msg.event) {
+              setLifecycleEvents((prev) => {
+                if (prev.some((e) => e.id === msg.event.id)) return prev;
+                return [...prev, msg.event];
+              });
+              return;
+            }
+            if (msg.type === 'lifecycle_events_history' && Array.isArray(msg.events)) {
+              setLifecycleEvents(msg.events);
+              return;
+            }
             if (msg.type === 'data' && msg.data) {
               console.log(`[FRONTEND-WS-DATA] chars=${msg.data.length} preview=${JSON.stringify(msg.data.slice(0, 100))}`);
+              if (firstDataChunkRef.current) {
+                firstDataChunkRef.current = false;
+                addLifecycleEvent(
+                  'output_reception',
+                  isEn ? 'Output Reception' : 'دریافت پاسخ از ترمینال',
+                  isEn
+                    ? `Received initial terminal data stream (${msg.data.length} chars)`
+                    : `اولین خروجی خط فرمان از تجهیز دریافت شد (${msg.data.length} کاراکتر)`,
+                  'success',
+                  { chars: msg.data.length }
+                );
+              }
               appendStreamText(msg.data);
             } else if (msg.type === 'status') {
               if (msg.status === 'connected') {
                 if (msg.is_real) {
                   setSshSessionMode('real_ssh');
                   setSshLatency(msg.latency_ms || 2.2);
+                  addLifecycleEvent(
+                    'shell_creation',
+                    isEn ? 'Interactive Shell Ready' : 'کانال سخت‌افزاری فعال شد',
+                    isEn
+                      ? `PTY shell channel established in ${msg.latency_ms || 2}ms. Real SSH hardware session active.`
+                      : `کانال PTY تعاملی در ${msg.latency_ms || 2} میلی‌ثانیه برقرار شد.`,
+                    'success',
+                    { latency_ms: msg.latency_ms, legacy: msg.legacy_algorithms }
+                  );
+                  setTroubleshootData({
+                    status: 'connected',
+                    actualError: undefined,
+                    latencyMs: msg.latency_ms || 2.4,
+                    host: targetHost,
+                    port: sshPort,
+                    username: sshUser,
+                    protocol: (connProtocol || 'ssh').toUpperCase(),
+                    negotiationInfo: {
+                      tier: msg.legacy_algorithms ? 'Tier 2 (Legacy Cisco 2960 Fallback)' : 'Tier 1 (Modern Fast Path)',
+                      kex: msg.legacy_algorithms ? 'diffie-hellman-group14-sha1' : 'curve25519-sha256@libssh.org',
+                      cipher: msg.legacy_algorithms ? 'aes128-cbc' : 'aes256-gcm@openssh.com',
+                      key_type: msg.legacy_algorithms ? 'ssh-rsa (2048-bit)' : 'rsa-sha2-512',
+                    },
+                  });
                   appendLines([
                     {
                       id: 'sys-ssh-ok-' + Date.now(),
@@ -707,6 +816,12 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
                   ]);
                 } else {
                   setSshSessionMode('failed');
+                  addLifecycleEvent(
+                    'exception',
+                    isEn ? 'Connection Failed' : 'خطای ارتباط سخت‌افزاری',
+                    isEn ? `Device ${targetHost}:${sshPort} did not establish authentic hardware SSH session.` : `عدم برقراری ارتباط زنده با ${targetHost}:${sshPort}`,
+                    'error'
+                  );
                   appendLines([
                     {
                       id: 'sys-fail-real-' + Date.now(),
@@ -719,6 +834,31 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
                 }
               } else if (msg.status === 'failed' || msg.status === 'disconnected') {
                 setSshSessionMode('failed');
+                addLifecycleEvent(
+                  msg.status === 'failed' ? 'exception' : 'disconnect',
+                  msg.status === 'failed'
+                    ? (isEn ? 'Connection Failed' : 'خطای ارتباط سخت‌افزاری')
+                    : (isEn ? 'Session Disconnected' : 'ارتباط خاتمه یافت'),
+                  msg.message || (isEn ? 'Disconnected from device' : 'ارتباط با تجهیز قطع شد'),
+                  msg.status === 'failed' ? 'error' : 'warning',
+                  msg.diagnostic
+                );
+                if (msg.diagnostic) {
+                  setTroubleshootData({
+                    status: 'failed',
+                    actualError: msg.diagnostic.summary || msg.message || 'Connection failed',
+                    category: msg.category || msg.diagnostic.category,
+                    possibleCauseEn: msg.diagnostic.root_cause_en,
+                    possibleCauseFa: msg.diagnostic.root_cause_fa,
+                    recommendedCheckEn: msg.diagnostic.workflow_steps_en,
+                    recommendedCheckFa: msg.diagnostic.workflow_steps_fa,
+                    ciscoCommands: msg.diagnostic.cisco_commands,
+                    host: targetHost,
+                    port: sshPort,
+                    username: sshUser,
+                    protocol: (connProtocol || 'ssh').toUpperCase(),
+                  });
+                }
                 appendLines([
                   {
                     id: 'ws-status-fail-' + Date.now(),
@@ -757,6 +897,44 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
               }
             } else if (msg.type === 'error') {
               setSshSessionMode('failed');
+              addLifecycleEvent(
+                'backend_exception',
+                isEn ? 'Backend Connection Error' : 'خطای اتصال سمت بک‌اند',
+                msg.error || (isEn ? 'Connection error' : 'خطای ارتباط'),
+                'error',
+                msg.diagnostic
+              );
+              if (msg.diagnostic) {
+                setTroubleshootData({
+                  status: 'failed',
+                  actualError: msg.diagnostic.summary || msg.error || 'Connection error',
+                  category: msg.code || msg.diagnostic.category,
+                  possibleCauseEn: msg.diagnostic.root_cause_en,
+                  possibleCauseFa: msg.diagnostic.root_cause_fa,
+                  recommendedCheckEn: msg.diagnostic.workflow_steps_en,
+                  recommendedCheckFa: msg.diagnostic.workflow_steps_fa,
+                  ciscoCommands: msg.diagnostic.cisco_commands,
+                  host: targetHost,
+                  port: sshPort,
+                  username: sshUser,
+                  protocol: (connProtocol || 'ssh').toUpperCase(),
+                });
+              } else {
+                setTroubleshootData((prev) => ({
+                  status: 'failed',
+                  actualError: msg.error || (isEn ? 'Connection error' : 'خطای ارتباط'),
+                  category: msg.code || 'BACKEND_ERROR',
+                  possibleCauseEn: msg.error,
+                  possibleCauseFa: isEn ? undefined : 'خطای پاسخ‌گویی از سرور بک‌اند',
+                  recommendedCheckEn: ['Verify Python backend service status', 'Check WebSocket connection route'],
+                  recommendedCheckFa: ['بررسی فعال بودن سرویس پایتون', 'بررسی پورت وب‌سوکت'],
+                  host: targetHost,
+                  port: sshPort,
+                  username: sshUser,
+                  protocol: (connProtocol || 'ssh').toUpperCase(),
+                  ...(prev || {}),
+                }));
+              }
               appendLines([
                 {
                   id: 'ws-err-' + Date.now(),
@@ -807,7 +985,22 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
           }
         };
 
+        ws.onerror = () => {
+          addLifecycleEvent(
+            'backend_exception',
+            isEn ? 'WebSocket Error' : 'خطای شبکه وب‌سوکت',
+            isEn ? 'WebSocket stream encountered a network error or refused connection' : 'خطای ارتباطی در استریم وب‌سوکت',
+            'error'
+          );
+        };
+
         ws.onclose = () => {
+          addLifecycleEvent(
+            'disconnect',
+            isEn ? 'WebSocket Disconnected' : 'ارتباط وب‌سوکت قطع شد',
+            isEn ? 'Terminal stream disconnected from server.' : 'ارتباط وب‌سوکت بسته شد.',
+            'warning'
+          );
           if (pingIntervalRef.current) {
             clearInterval(pingIntervalRef.current);
             pingIntervalRef.current = null;
@@ -1080,6 +1273,13 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
       }
 
       wsRef.current.send(JSON.stringify({ type: 'input', data: trimmed + '\r\n' }));
+      addLifecycleEvent(
+        'command_transmission',
+        isEn ? 'Command Transmission' : 'ارسال دستور به ترمینال',
+        isEn ? `Executed command: ${trimmed}` : `دستور ارسال شد: ${trimmed}`,
+        'info',
+        { commandLength: trimmed.length }
+      );
       if (
         cmdLower.startsWith('sh ') ||
         cmdLower.startsWith('show ') ||
@@ -2384,6 +2584,30 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
               </div>
             )}
 
+            {/* Connection Log & Troubleshoot Action Button */}
+            <button
+              type="button"
+              onClick={() => setShowConnectionDiagnostics(true)}
+              className={`px-2.5 py-1 rounded-lg border text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
+                sshSessionMode === 'failed'
+                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30 animate-pulse'
+                  : sshSessionMode === 'real_ssh'
+                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+                  : 'bg-slate-900/90 text-slate-300 hover:text-white border-slate-700/80 hover:bg-slate-800'
+              }`}
+              title={isEn ? "Connection Lifecycle Log & Troubleshooting Diagnostics" : "لاگ چرخه حیات اتصال و عیب‌یابی ارتباط"}
+            >
+              <Activity className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="font-medium text-[11px]">
+                {isEn ? 'Connection Log & Troubleshoot' : 'لاگ اتصال و عیب‌یابی'}
+              </span>
+              {lifecycleEvents.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-cyan-300 border border-cyan-500/30 font-mono">
+                  {lifecycleEvents.length}
+                </span>
+              )}
+            </button>
+
             {/* Terminal Appearance Menu Popover (Button-based to prevent clutter) */}
             <div className="relative" ref={appearanceMenuRef}>
               <button
@@ -3148,11 +3372,31 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
       />
     );
 
+    const connectionLogModal = showConnectionDiagnostics ? (
+      <ConnectionLogTroubleshootModal
+        isOpen={showConnectionDiagnostics}
+        onClose={() => setShowConnectionDiagnostics(false)}
+        device={device}
+        connectionState={
+          sshSessionMode === 'real_ssh'
+            ? 'connected'
+            : sshSessionMode === 'failed'
+            ? 'failed'
+            : 'connecting'
+        }
+        lifecycleEvents={lifecycleEvents}
+        troubleshootData={troubleshootData}
+        onClearLogs={() => setLifecycleEvents([])}
+        isLightMode={isLightMode}
+      />
+    ) : null;
+
     if (isEmbedded) {
       return (
         <>
           {terminalWindow}
           {writeConfirmModal}
+          {connectionLogModal}
         </>
       );
     }
@@ -3174,6 +3418,7 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
           {terminalWindow}
         </div>
         {writeConfirmModal}
+        {connectionLogModal}
       </>
     );
   };

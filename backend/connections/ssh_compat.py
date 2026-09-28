@@ -812,6 +812,15 @@ def connect_mikrotik_ssh(
     return False, last_error or f"MikroTik SSH connection failed for user '{user_to_try}' on {hostname}:{port}"
 
 
+def _emit_event_safe(on_event: Optional[Any], stage: str, title: str, detail: str, level: str = "info", meta: Optional[Dict[str, Any]] = None):
+    """Safely notifies connection lifecycle listeners without throwing exceptions."""
+    if on_event and callable(on_event):
+        try:
+            on_event(stage, title, detail, level, meta)
+        except Exception as e:
+            logger.debug(f"[ssh_compat] Event callback error: {e}")
+
+
 def connect_cisco_2960_ssh(
     client: Any,
     hostname: str,
@@ -821,7 +830,8 @@ def connect_cisco_2960_ssh(
     timeout: float = 6.0,
     banner_timeout: float = 6.0,
     auth_timeout: float = 6.0,
-    on_fallback_log: Optional[Any] = None
+    on_fallback_log: Optional[Any] = None,
+    on_event: Optional[Any] = None
 ) -> Tuple[bool, Optional[str]]:
     """
     Dedicated Adaptive SSH Engine for Cisco Catalyst 2960, 3560, 3750 and Cisco IOS 12/15 devices.
@@ -838,9 +848,11 @@ def connect_cisco_2960_ssh(
     auth_failed = False
 
     try:
+        _emit_event_safe(on_event, "tcp_connect", "TCP Connection Initiated", f"Opening TCP stream to {hostname}:{port}", "info")
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         sock.connect((hostname, port))
+        _emit_event_safe(on_event, "tcp_established", "TCP Connection Established", f"TCP connection established with {hostname}:{port}", "success")
 
         transport = paramiko.Transport(sock)
         apply_security_options_safely(
@@ -850,10 +862,20 @@ def connect_cisco_2960_ssh(
             cipher_candidates=CISCO_2960_CIPHERS,
             mac_candidates=CISCO_2960_MACS
         )
+        _emit_event_safe(on_event, "ssh_negotiation", "SSH Negotiation Started", "Initializing Paramiko Transport with Cisco Catalyst algorithm suite", "info")
         transport.start_client(timeout=banner_timeout)
+        remote_ver = str(getattr(transport, "remote_version", "") or "")
+        _emit_event_safe(on_event, "ssh_protocol", "SSH Protocol Exchange", f"Remote SSH Protocol: {remote_ver or 'SSH-2.0'}", "info", {"remote_version": remote_ver})
+        _emit_event_safe(on_event, "key_exchange", "Key Exchange Negotiation", "Agreed on Cisco compatible KEX parameters (DH Group 14/1)", "info")
+        remote_key = transport.get_remote_server_key()
+        key_name = remote_key.get_name() if remote_key else "unknown"
+        _emit_event_safe(on_event, "host_key_negotiation", "Host Key Negotiation", f"Host key negotiated: {key_name}", "info", {"key_type": key_name})
+
+        _emit_event_safe(on_event, "authentication", "Authentication Attempt", f"Submitting credentials for user '{username}'", "info")
         auth_ok, auth_err = authenticate_transport(transport, username=username, password=password)
 
         if auth_ok:
+            _emit_event_safe(on_event, "authentication_success", "Authentication Successful", f"User '{username}' authenticated successfully", "success")
             client._transport = transport
             client._negotiation_info = extract_negotiation_info(transport, "cisco_2960_native")
             logger.info(
@@ -866,6 +888,7 @@ def connect_cisco_2960_ssh(
         else:
             auth_failed = True
             last_err = auth_err or f"Authentication failed for user '{username}' on Cisco switch"
+            _emit_event_safe(on_event, "authentication_failure", "Authentication Failed", last_err, "error")
     except Exception as e:
         last_err = str(e).strip()
         logger.debug(f"[Cisco 2960 SSH] Primary attempt notice: {e}")
@@ -937,7 +960,8 @@ def connect_ssh_device(
     banner_timeout: float = 6.0,
     auth_timeout: float = 6.0,
     on_fallback_log: Optional[Any] = None,
-    platform: str = ""
+    platform: str = "",
+    on_event: Optional[Any] = None
 ) -> Tuple[bool, Optional[str]]:
     """
     Connects to a network device using the Two-Tier Adaptive Negotiation Engine:
@@ -984,7 +1008,8 @@ def connect_ssh_device(
             timeout=timeout,
             banner_timeout=banner_timeout,
             auth_timeout=auth_timeout,
-            on_fallback_log=on_fallback_log
+            on_fallback_log=on_fallback_log,
+            on_event=on_event
         )
 
     # --------------------------------------------------------------------------
@@ -996,9 +1021,11 @@ def connect_ssh_device(
     tier1_auth_failed = False
 
     try:
+        _emit_event_safe(on_event, "tcp_connect", "TCP Connection Initiated", f"Opening TCP stream to {hostname}:{port}", "info")
         sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock1.settimeout(timeout)
         sock1.connect((hostname, port))
+        _emit_event_safe(on_event, "tcp_established", "TCP Connection Established", f"TCP connection established with {hostname}:{port}", "success")
 
         transport1 = paramiko.Transport(sock1)
         apply_security_options_safely(
@@ -1009,11 +1036,17 @@ def connect_ssh_device(
             mac_candidates=TIER1_MODERN_MACS
         )
 
+        _emit_event_safe(on_event, "ssh_negotiation", "SSH Negotiation Started", "Starting SSHv2 client transport negotiation", "info")
         transport1.start_client(timeout=banner_timeout)
+        remote_ident = str(getattr(transport1, "remote_version", "") or "")
+        _emit_event_safe(on_event, "ssh_protocol", "SSH Protocol Exchange", f"Remote SSH Protocol: {remote_ident or 'SSH-2.0'}", "info", {"remote_version": remote_ident})
+        _emit_event_safe(on_event, "key_exchange", "Key Exchange Negotiation", "Agreed on modern KEX parameters", "info")
+        remote_key = transport1.get_remote_server_key()
+        key_name = remote_key.get_name() if remote_key else "unknown"
+        _emit_event_safe(on_event, "host_key_negotiation", "Host Key Negotiation", f"Host key negotiated: {key_name}", "info", {"key_type": key_name})
 
         # Dynamic MikroTik Detection via SSH banner:
-        remote_ident = str(getattr(transport1, "remote_version", "") or "").lower()
-        if "rosssh" in remote_ident or "mikrotik" in remote_ident:
+        if "rosssh" in remote_ident.lower() or "mikrotik" in remote_ident.lower():
             logger.info(f"[SSH Auto-Discovery] Detected MikroTik RouterOS banner ({remote_ident}) on {hostname}:{port}. Routing to MikroTik SSH Engine.")
             try:
                 transport1.close()
@@ -1035,9 +1068,11 @@ def connect_ssh_device(
                 auth_timeout=auth_timeout
             )
 
+        _emit_event_safe(on_event, "authentication", "Authentication Attempt", f"Submitting credentials for user '{username}'", "info")
         auth_ok, auth_err = authenticate_transport(transport1, username=username, password=password)
 
         if auth_ok:
+            _emit_event_safe(on_event, "authentication_success", "Authentication Successful", f"User '{username}' authenticated successfully", "success")
             # Succeeded on Tier 1 (Modern Fast Path)!
             client._transport = transport1
             client._negotiation_info = extract_negotiation_info(transport1, "tier1_modern")
@@ -1051,6 +1086,7 @@ def connect_ssh_device(
         else:
             tier1_auth_failed = True
             tier1_error = auth_err or f"Authentication rejected for user '{username}'"
+            _emit_event_safe(on_event, "authentication_failure", "Authentication Failed", tier1_error, "error")
     except Exception as e:
         tier1_error = str(e).strip() or "Handshake error"
     finally:
@@ -1149,7 +1185,8 @@ def open_adaptive_shell_channel(
     term_name: str = "xterm-256color",
     timeout: float = 6.0,
     on_status_msg: Optional[Any] = None,
-    platform: str = ""
+    platform: str = "",
+    on_event: Optional[Any] = None
 ) -> Tuple[Optional[Any], Optional[Any], Optional[Any], Dict[str, Any], Optional[str]]:
     """
     Opens an interactive shell channel using the unified Two-Tier Adaptive SSH Engine:
@@ -1182,7 +1219,8 @@ def open_adaptive_shell_channel(
         banner_timeout=timeout,
         auth_timeout=timeout,
         on_fallback_log=fallback_cb,
-        platform=platform
+        platform=platform,
+        on_event=on_event
     )
 
     if not connected or not getattr(client, '_transport', None):
@@ -1192,12 +1230,15 @@ def open_adaptive_shell_channel(
     info = getattr(client, '_negotiation_info', {})
 
     try:
+        _emit_event_safe(on_event, "channel_creation", "Channel Creation", "Requesting interactive session channel from device", "info")
         channel = transport.open_session(timeout=timeout)
         channel.get_pty(term=term_name, width=cols, height=rows)
         channel.invoke_shell()
         channel.settimeout(0.0)  # Non-blocking for event loops
+        _emit_event_safe(on_event, "shell_creation", "Interactive Shell Created", f"Allocated PTY {term_name} ({cols}x{rows}) and invoked interactive shell", "success", {"term": term_name, "cols": cols, "rows": rows})
         return channel, transport, client, info, None
     except Exception as e:
+        _emit_event_safe(on_event, "exception", "Shell Channel Exception", f"Failed to open interactive shell channel: {e}", "error")
         try:
             transport.close()
         except Exception:

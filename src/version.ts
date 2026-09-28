@@ -10,9 +10,34 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.176.0';
+export const APP_VERSION = '1.177.0';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.177.0',
+    releaseDate: '2026-09-28',
+    type: 'minor',
+    title: 'فاز ۵: لاگ چرخه حیات اتصال و سیستم عیب‌یابی جامع ترمینال (SSH-V2)',
+    title_en: 'Phase 5: Connection Lifecycle Log & Comprehensive Terminal Diagnostics (SSH-V2)',
+    changes: [
+      'افزودن دکمه و پنل تعاملی «لاگ اتصال و عیب‌یابی» (Connection Log & Troubleshoot) در هدر ترمینال',
+      'ردیابی و نمایش لحظه‌ای رویدادهای چرخه حیات اتصال (وب‌سوکت، سوکت TCP، تبادل پروتکل، KEX، احراز هویت، کانال PTY، ارسال دستورات و خروجی)',
+      'سانسور و محافظت ۱۰۰٪ رمزهای عبور و اطلاعات حساس (Redaction) در کلیه لاگ‌ها و گزارش‌ها',
+      'سیستم تحلیل ریشه‌ای خطاهای واقعی بک‌اند (Root Cause Analysis) برای تایم‌اوت، عدم تطابق سایفر، خطای رمز و قطعی ارتباط',
+      'ارائه گام‌به‌گام مراحل رفع مشکل و دستورات ترمینال سیسکو با قابلیت کپی مستقیم',
+      'امکان استخراج و کپی گزارش جامع تشخیصی (Full Diagnostic Report) با یک کلیک',
+      'رعایت کامل استانداردهای مودال: دکمه‌های کنترلی سه‌گانه، تم تاریک/روشن، حفظ حریم فوتر و دوزبانه بودن'
+    ],
+    changes_en: [
+      'Added interactive "Connection Log & Troubleshoot" action button in Terminal UI header bar',
+      'Real-time lifecycle tracking of 16 connection events (WebSocket, TCP socket, SSH negotiation, KEX, auth, PTY shell, command transmission, output)',
+      'Zero-leak credential security with strict redaction of passwords and sensitive tokens in all logs and reports',
+      'Root-cause triage matrix for authentic backend errors (timeout, cipher/KEX mismatch, authentication failure, VTY exhaustion)',
+      'Step-by-step remediation checklist with actionable Cisco IOS CLI commands and single-click copy',
+      'One-click export and clipboard copy of the complete formatted diagnostic report',
+      'Strict compliance with universal modal standards: 3-button controls, dark/light themes, footer clearance, and bilingual i18n'
+    ]
+  },
   {
     version: '1.176.0',
     releaseDate: '2026-09-28',
