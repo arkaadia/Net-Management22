@@ -10,9 +10,26 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.177.0';
+export const APP_VERSION = '1.177.1';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.177.1',
+    releaseDate: '2026-09-28',
+    type: 'patch',
+    title: 'رفع مشکل محیط اجرایی SSH V2 و تثبیت نسخه Paramiko 2.12.0',
+    title_en: 'Fix SSH V2 backend runtime and pin Paramiko 2.12.0 for legacy Cisco SSH-2',
+    changes: [
+      'تثبیت و همگام‌سازی مفسر پایتون بک‌اند با کتابخانه Paramiko 2.12.0 جهت اتصال موفق به تجهیزات سیسکو (Cisco Catalyst 2960 و IOS 12.2)',
+      'گزارش دقیق مرحله به مرحله در خطاهای SSH (اتصال TCP، مذاکره کلید سایفر و احراز هویت)',
+      'به‌روزرسانی اسکریپت‌های نصب setup-panel.sh و install.sh برای اطمینان از نصب نسخه Paramiko 2.12.0 در محیط سرور'
+    ],
+    changes_en: [
+      'Pinned and synchronized Python backend runtime with Paramiko 2.12.0 for successful SSH-2 connection to legacy Cisco Catalyst 2960 (IOS 12.2)',
+      'Enhanced granular stage-specific reporting in SSH errors (TCP connection, KEX/cipher negotiation, authentication)',
+      'Updated setup-panel.sh and install.sh scripts to enforce Paramiko 2.12.0 on server environments'
+    ]
+  },
   {
     version: '1.177.0',
     releaseDate: '2026-09-28',

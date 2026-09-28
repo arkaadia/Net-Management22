@@ -295,7 +295,7 @@ if command -v apt-get &>/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
   wait_for_dpkg_lock
   apt-get update -y || true
-  apt-get install -y curl git python3 python3-pip traceroute dnsutils whois iputils-ping postgresql postgresql-contrib nginx openssl guacd libguac-client-rdp0 libguac-client-vnc0
+  apt-get install -y curl git python3 python3-pip python3-paramiko python3-cryptography python3-websockets traceroute dnsutils whois iputils-ping postgresql postgresql-contrib nginx openssl guacd libguac-client-rdp0 libguac-client-vnc0
 elif command -v dnf &>/dev/null; then
   dnf install -y epel-release 2>/dev/null || true
   dnf install -y curl git python3 python3-pip traceroute bind-utils whois iputils postgresql-server postgresql-contrib guacd
@@ -308,6 +308,12 @@ elif command -v pacman &>/dev/null; then
   pacman -Sy --noconfirm curl git python python-pip traceroute bind whois iputils postgresql
 else
   echo -e "${YELLOW}مدیریت پکیج شناخته نشد، لطفاً از نصب بودن git, curl, python3, postgresql و guacd اطمینان حاصل فرمایید.${NC}"
+fi
+
+# Ensure Paramiko 2.12.0 is pinned in Python runtime (crucial for legacy Cisco IOS 12.2/2960 SSH-2 compatibility)
+if command -v pip3 &>/dev/null; then
+  pip3 install --break-system-packages "paramiko==2.12.0" "cryptography>=3.3,<41.0.0" "websockets>=10.4" 2>/dev/null || \
+  pip3 install "paramiko==2.12.0" "cryptography>=3.3,<41.0.0" "websockets>=10.4" 2>/dev/null || true
 fi
 
 # ------------------------------------------------------------------------------

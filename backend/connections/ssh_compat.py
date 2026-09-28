@@ -846,14 +846,17 @@ def connect_cisco_2960_ssh(
     transport = None
     last_err = None
     auth_failed = False
+    stage = "tcp_connect"
 
     try:
+        stage = "tcp_connect"
         _emit_event_safe(on_event, "tcp_connect", "TCP Connection Initiated", f"Opening TCP stream to {hostname}:{port}", "info")
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         sock.connect((hostname, port))
         _emit_event_safe(on_event, "tcp_established", "TCP Connection Established", f"TCP connection established with {hostname}:{port}", "success")
 
+        stage = "ssh_negotiation"
         transport = paramiko.Transport(sock)
         apply_security_options_safely(
             transport,
@@ -871,6 +874,7 @@ def connect_cisco_2960_ssh(
         key_name = remote_key.get_name() if remote_key else "unknown"
         _emit_event_safe(on_event, "host_key_negotiation", "Host Key Negotiation", f"Host key negotiated: {key_name}", "info", {"key_type": key_name})
 
+        stage = "authentication"
         _emit_event_safe(on_event, "authentication", "Authentication Attempt", f"Submitting credentials for user '{username}'", "info")
         auth_ok, auth_err = authenticate_transport(transport, username=username, password=password)
 
@@ -890,8 +894,15 @@ def connect_cisco_2960_ssh(
             last_err = auth_err or f"Authentication failed for user '{username}' on Cisco switch"
             _emit_event_safe(on_event, "authentication_failure", "Authentication Failed", last_err, "error")
     except Exception as e:
-        last_err = str(e).strip()
-        logger.debug(f"[Cisco 2960 SSH] Primary attempt notice: {e}")
+        if stage == "tcp_connect":
+            last_err = f"TCP connection failed to {hostname}:{port}: {e}"
+        elif stage == "ssh_negotiation":
+            last_err = f"SSH key exchange/cipher negotiation failed on {hostname}:{port}: {e}"
+        elif stage == "authentication":
+            last_err = f"SSH authentication error for user '{username}' on {hostname}:{port}: {e}"
+        else:
+            last_err = str(e).strip()
+        logger.debug(f"[Cisco 2960 SSH] Primary attempt notice ({stage}): {e}")
     finally:
         if not getattr(client, '_transport', None) or client._transport is not transport:
             if transport:
@@ -1019,14 +1030,17 @@ def connect_ssh_device(
     transport1 = None
     tier1_error = None
     tier1_auth_failed = False
+    stage1 = "tcp_connect"
 
     try:
+        stage1 = "tcp_connect"
         _emit_event_safe(on_event, "tcp_connect", "TCP Connection Initiated", f"Opening TCP stream to {hostname}:{port}", "info")
         sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock1.settimeout(timeout)
         sock1.connect((hostname, port))
         _emit_event_safe(on_event, "tcp_established", "TCP Connection Established", f"TCP connection established with {hostname}:{port}", "success")
 
+        stage1 = "ssh_negotiation"
         transport1 = paramiko.Transport(sock1)
         apply_security_options_safely(
             transport1,
@@ -1068,6 +1082,7 @@ def connect_ssh_device(
                 auth_timeout=auth_timeout
             )
 
+        stage1 = "authentication"
         _emit_event_safe(on_event, "authentication", "Authentication Attempt", f"Submitting credentials for user '{username}'", "info")
         auth_ok, auth_err = authenticate_transport(transport1, username=username, password=password)
 
@@ -1088,7 +1103,14 @@ def connect_ssh_device(
             tier1_error = auth_err or f"Authentication rejected for user '{username}'"
             _emit_event_safe(on_event, "authentication_failure", "Authentication Failed", tier1_error, "error")
     except Exception as e:
-        tier1_error = str(e).strip() or "Handshake error"
+        if stage1 == "tcp_connect":
+            tier1_error = f"TCP connection failed to {hostname}:{port}: {e}"
+        elif stage1 == "ssh_negotiation":
+            tier1_error = f"SSH negotiation failed on {hostname}:{port}: {e}"
+        elif stage1 == "authentication":
+            tier1_error = f"SSH authentication error for '{username}' on {hostname}:{port}: {e}"
+        else:
+            tier1_error = str(e).strip() or "Handshake error"
     finally:
         if not getattr(client, '_transport', None) or client._transport is not transport1:
             if transport1:
@@ -1126,12 +1148,15 @@ def connect_ssh_device(
     sock2 = None
     transport2 = None
     tier2_error = None
+    stage2 = "tcp_connect"
 
     try:
+        stage2 = "tcp_connect"
         sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock2.settimeout(timeout + 2.0)
         sock2.connect((hostname, port))
 
+        stage2 = "ssh_negotiation"
         transport2 = paramiko.Transport(sock2)
         apply_security_options_safely(
             transport2,
@@ -1142,6 +1167,7 @@ def connect_ssh_device(
         )
 
         transport2.start_client(timeout=banner_timeout + 2.0)
+        stage2 = "authentication"
         auth_ok2, auth_err2 = authenticate_transport(transport2, username=username, password=password)
 
         if auth_ok2:
@@ -1158,7 +1184,14 @@ def connect_ssh_device(
         else:
             tier2_error = auth_err2 or f"Invalid username or password for user '{username}'"
     except Exception as e2:
-        tier2_error = str(e2).strip() or "Legacy handshake failed"
+        if stage2 == "tcp_connect":
+            tier2_error = f"TCP connection failed to {hostname}:{port}: {e2}"
+        elif stage2 == "ssh_negotiation":
+            tier2_error = f"Legacy Cisco SSH key exchange failed on {hostname}:{port}: {e2}"
+        elif stage2 == "authentication":
+            tier2_error = f"SSH authentication error for '{username}' on {hostname}:{port}: {e2}"
+        else:
+            tier2_error = str(e2).strip() or "Legacy handshake failed"
     finally:
         if not getattr(client, '_transport', None) or client._transport is not transport2:
             if transport2:

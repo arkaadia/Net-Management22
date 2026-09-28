@@ -430,6 +430,12 @@ safe_apt_install \
   git curl build-essential python3 python3-pip python3-paramiko python3-cryptography python3-websockets ca-certificates gnupg lsb-release xz-utils openssl ufw traceroute dnsutils whois iputils-ping \
   postgresql postgresql-contrib postgresql-client nginx guacd libguac-client-rdp0 libguac-client-vnc0
 
+# Ensure Paramiko 2.12.0 is pinned in Python runtime (crucial for legacy Cisco IOS 12.2/2960 SSH-2 compatibility)
+if command -v pip3 &>/dev/null; then
+  pip3 install --break-system-packages "paramiko==2.12.0" "cryptography>=3.3,<41.0.0" "websockets>=10.4" 2>/dev/null || \
+  pip3 install "paramiko==2.12.0" "cryptography>=3.3,<41.0.0" "websockets>=10.4" 2>/dev/null || true
+fi
+
 log_step "Ensuring PostgreSQL service is enabled and started..."
 systemctl enable postgresql 2>/dev/null || true
 systemctl start postgresql 2>/dev/null || service postgresql start 2>/dev/null || true

@@ -4064,6 +4064,13 @@ def run_server(port=5001, host=None):
     if host is None:
         host = os.environ.get("PYTHON_HOST") or os.environ.get("HOST") or '0.0.0.0'
 
+    # Log Paramiko runtime version
+    try:
+        import paramiko
+        print(f"[Python SSH Engine] Running Paramiko {paramiko.__version__} (SSH-2 enterprise & legacy Cisco suite active)")
+    except ImportError:
+        print("[Python SSH Engine] Warning: Paramiko is not installed")
+
     # 1. Encrypt any unencrypted passwords in the database on startup
     try:
         migrate_database_credentials(DATA_FILE)
