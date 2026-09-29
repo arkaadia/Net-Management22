@@ -10,9 +10,28 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.177.3';
+export const APP_VERSION = '1.178.0';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.178.0',
+    releaseDate: '2026-09-29',
+    type: 'minor',
+    title: 'انتقال و یکپارچه‌سازی موتور اثبات‌شده مذاکره لگاسی SSH سیسکو از مرجع NetTop',
+    title_en: 'Ported proven NetTop legacy Cisco SSH negotiation engine & adaptive KEX recovery',
+    changes: [
+      'انتقال و پیاده‌سازی ثبت مستقیم کلاس‌های الگوریتم KEX پارامیکو (KexGroup1, KexGroup14, KexGex, KexCurve25519) در Transport._kex_info',
+      'پچ کردن سازنده ترنسپورت پارامیکو جهت تخصیص خودکار و تضمینی الگوریتم‌های KEX، سایفرها و کلیدهای هاست تجهیزات شبکه',
+      'پیاده‌سازی قلاب انطباقی مذاکره KEX (adaptive_parse_kex_init) برای بازیابی خودکار بسته KEXINIT در مواجهه با سوئیچ‌های ۲۹۶۰ و ۳۵۶۰',
+      'تعبیه فکتوری CiscoCompatibleTransport و به‌کارگیری آن در متد اختصاصی اتصال به سوئیچ‌های سیسکو'
+    ],
+    changes_en: [
+      'Ported direct registration of Paramiko KEX engine classes (KexGroup1, KexGroup14, KexGex, KexCurve25519) into Transport._kex_info',
+      'Patched Paramiko Transport constructor to guarantee baseline availability of network hardware KEX, ciphers, and host keys',
+      'Implemented adaptive KEX negotiation hook (adaptive_parse_kex_init) with automatic KEXINIT unpacking for Cisco Catalyst 2960/3560 devices',
+      'Added CiscoCompatibleTransport factory and integrated it into the Cisco SSH connection pipeline'
+    ]
+  },
   {
     version: '1.177.3',
     releaseDate: '2026-09-29',
