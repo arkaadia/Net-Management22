@@ -239,6 +239,7 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
   deviceRef.current = device;
   const [selectedPortIds, setSelectedPortIds] = useState<string[]>([]);
   const [showAppearanceMenu, setShowAppearanceMenu] = useState(false);
+  const [selectedSshProfile, setSelectedSshProfile] = useState<string>('auto');
   const appearanceMenuRef = useRef<HTMLDivElement>(null);
   const lastClickedPortRef = useRef<SwitchPort | null>(null);
   const lastInsertedPortTextRef = useRef<string | null>(null);
@@ -705,6 +706,7 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
           ssh_password: pass,
           enable_password: enablePass,
           platform: devPlatform,
+          selected_profile: selectedSshProfile === 'auto' ? undefined : selectedSshProfile,
         });
 
         // Record initial WebSocket connection lifecycle event
@@ -1071,7 +1073,7 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
         activeDevIdRef.current = null;
       };
     }
-  }, [isOpen, device?.id]);
+  }, [isOpen, device?.id, selectedSshProfile]);
 
   // Auto scroll to bottom of terminal
   useEffect(() => {
@@ -2583,6 +2585,25 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
                 </button>
               </div>
             )}
+
+            {/* SSH Method & Negotiation Version Navbar Selector */}
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-900/90 border border-slate-700/80 text-xs">
+              <TerminalIcon className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+              <span className="hidden sm:inline font-medium text-[11px] text-slate-300">
+                {isEn ? 'SSH Version:' : 'روش/نگارش SSH:'}
+              </span>
+              <select
+                value={selectedSshProfile}
+                onChange={(e) => setSelectedSshProfile(e.target.value)}
+                className="bg-slate-950 text-indigo-300 font-mono font-semibold py-0.5 px-1.5 rounded border border-slate-700 focus:outline-none focus:border-indigo-400 cursor-pointer text-[10px]"
+                title={isEn ? 'Select SSH negotiation protocol version / profile' : 'انتخاب روش و نگارش پروتکل اتصال SSH'}
+              >
+                <option value="auto">{isEn ? 'Auto Multi-Tier' : 'خودکار هوشمند'}</option>
+                <option value="profile_1">{isEn ? 'SSH v2 / Paramiko 2 (Modern)' : 'SSH v2 / Paramiko 2 (مدرن)'}</option>
+                <option value="profile_2">{isEn ? 'SSH v2 (Group14 + CBC)' : 'SSH v2 (متوسط CBC)'}</option>
+                <option value="profile_3">{isEn ? 'SSH v2 (Legacy Cisco 2960)' : 'SSH v2 (سیسکو لگاسی ۲۹۶۰)'}</option>
+              </select>
+            </div>
 
             {/* Connection Log & Troubleshoot Action Button */}
             <button

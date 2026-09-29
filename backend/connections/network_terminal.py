@@ -299,6 +299,7 @@ class NetworkTerminalSession:
         on_close_callback: Optional[Callable[[], Any]] = None,
         on_status_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
         on_event_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        selected_profile: Optional[str] = None,
     ):
         self.session_id = f"term-{uuid.uuid4().hex[:8]}"
         self.device_id = device_id
@@ -306,6 +307,7 @@ class NetworkTerminalSession:
         self.port = int(port) if port else (23 if protocol.lower() == "telnet" else 22)
         self.protocol = protocol.lower()  # 'ssh' or 'telnet'
         self.username = username.strip() if username else "admin"
+        self.selected_profile = selected_profile
         
         # Transparently decrypt stored passwords if encrypted with Fernet
         self.password = decrypt_credential(password)
@@ -550,7 +552,8 @@ class NetworkTerminalSession:
             timeout=15.0,
             on_status_msg=self.on_data_callback,
             platform=self.platform,
-            on_event=handle_sub_event
+            on_event=handle_sub_event,
+            selected_profile=self.selected_profile
         )
 
         first_error = None

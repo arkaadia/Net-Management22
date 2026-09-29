@@ -512,6 +512,7 @@ export function getTerminalWebSocketUrl(
     password?: string;
     enable_password?: string;
     platform?: string;
+    selected_profile?: string;
   }
 ): string {
   const loc = window.location;
@@ -529,6 +530,7 @@ export function getTerminalWebSocketUrl(
     if (pass) query.set('password', pass);
     if (deviceInfo.enable_password) query.set('enable_password', deviceInfo.enable_password);
     if (deviceInfo.platform) query.set('platform', deviceInfo.platform);
+    if (deviceInfo.selected_profile) query.set('selected_profile', deviceInfo.selected_profile);
   }
   return `${wsProto}//${loc.host}/ws/ssh/${encodeURIComponent(deviceId)}?${query.toString()}`;
 }

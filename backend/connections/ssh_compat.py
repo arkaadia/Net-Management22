@@ -1502,7 +1502,8 @@ def open_adaptive_shell_channel(
     timeout: float = 15.0,
     on_status_msg: Optional[Any] = None,
     platform: str = "",
-    on_event: Optional[Any] = None
+    on_event: Optional[Any] = None,
+    selected_profile: Optional[str] = None
 ) -> Tuple[Optional[Any], Optional[Any], Optional[Any], Dict[str, Any], Optional[str]]:
     """
     Opens an interactive shell channel using the unified multi-profile SSH engine:
@@ -1540,7 +1541,8 @@ def open_adaptive_shell_channel(
         auth_timeout=30.0,
         on_fallback_log=fallback_cb,
         platform=platform,
-        on_event=on_event
+        on_event=on_event,
+        selected_profile=selected_profile
     )
 
     if not connected or not getattr(client, '_transport', None):

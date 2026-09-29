@@ -3892,6 +3892,9 @@ def start_websocket_server(ws_port: int):
             enable_password = conn.get("enable_password") or device.get("enable_password") or ""
             platform = (qs.get("platform") or [device.get("platform", "cisco_ios_xe")])[0].strip()
             req_shell = qs.get("shell", [device.get("default_shell", "bash")])[0].strip().lower()
+            selected_profile = (qs.get("selected_profile") or qs.get("profile") or qs.get("selectedSshProfile") or [None])[0]
+            if selected_profile == "auto":
+                selected_profile = None
 
             if not host:
                 err_msg = f"No Management IP or Host configured for device '{device.get('name', device_id)}'."
@@ -3964,7 +3967,8 @@ def start_websocket_server(ws_port: int):
                 rows=rows,
                 on_data_callback=on_data_received,
                 on_close_callback=on_session_closed,
-                on_event_callback=on_lifecycle_event
+                on_event_callback=on_lifecycle_event,
+                selected_profile=selected_profile
             )
             terminal_session_manager.register_session(session)
 

@@ -114,6 +114,10 @@ export function setupTerminalWebSocket(
     if (platform && !targetUrl.searchParams.get('platform')) {
       targetUrl.searchParams.set('platform', platform);
     }
+    const selectedProfile = parsedUrl.searchParams.get('selected_profile') || parsedUrl.searchParams.get('selectedSshProfile') || '';
+    if (selectedProfile && !targetUrl.searchParams.get('selected_profile')) {
+      targetUrl.searchParams.set('selected_profile', selectedProfile);
+    }
 
     const pythonWsUrl = `ws://127.0.0.1:${pythonWsPort}${targetUrl.pathname}${targetUrl.search}`;
     console.log(`[TerminalWs] Proxying terminal WebSocket to Python Paramiko engine: ws://127.0.0.1:${pythonWsPort}${targetUrl.pathname} (Device: ${deviceId}, Target: ${host}:${port})`);

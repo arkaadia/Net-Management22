@@ -10,9 +10,28 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.179.0';
+export const APP_VERSION = '1.180.0';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.180.0',
+    releaseDate: '2026-09-29',
+    type: 'minor',
+    title: 'اتصال زنده ترمینال سیسکو از طریق وب‌سوکت و Paramiko با نگارش‌های انتخابی SSH و حذف کامل داده‌های شبیه‌سازی‌شده',
+    title_en: 'Live Authentic Cisco Terminal Bridge via WebSocket and Paramiko with SSH Negotiation Profile Selector and Strict Zero-Mock Real Telemetry',
+    changes: [
+      'برقراری ارتباط تعاملی زنده و کاملاً واقعی ترمینال سیسکو (CiscoTerminalModal) از طریق وب‌سوکت و ماژول Paramiko در بک‌اند پایتون بدون داده‌های شبیه‌سازی‌شده (Strict Zero-Mock Data)',
+      'افزودن نوار انتخاب روش و نگارش مذاکره SSH در هدر ترمینال سیسکو (Auto Multi-Tier, Modern Profile 1, Intermediate Profile 2, Legacy Cisco Profile 3)',
+      'اتصال مستقیم کانال‌های PTY سخت‌افزاری و جریان داده‌های ورودی/خروجی تعاملی دوطرفه از طریق پراکسی وب‌سوکت Node.js به سرور پایتون',
+      'گزارش‌دهی هوشمند علت ریشه‌ای خطاها، تحلیل کدهای بازگشتی و ارائه دستورات دقیق IOS سیسکو جهت حل مشکل در پنجره لاگ اتصال و عیب‌یابی'
+    ],
+    changes_en: [
+      'Established 100% authentic interactive live Cisco terminal session stream via persistent WebSocket and Python Paramiko engine with strict zero-mock data.',
+      'Added an SSH Suite / Version selector navbar in the Cisco Terminal header allowing live dynamic switching between SSH negotiation profiles.',
+      'Direct bidirectional hardware PTY shell streaming proxied seamlessly through Node.js WebSocket gateway to the Python backend daemon.',
+      'Comprehensive root-cause error diagnostics and tailored Cisco IOS remediation workflows in the connection log troubleshoot panel.'
+    ]
+  },
   {
     version: '1.179.0',
     releaseDate: '2026-09-29',
