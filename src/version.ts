@@ -10,9 +10,26 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.177.1';
+export const APP_VERSION = '1.177.2';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.177.2',
+    releaseDate: '2026-09-29',
+    type: 'patch',
+    title: 'اصلاح شناسایی خودکار محیط مجازی پایتون (venv-paramiko212) در بک‌اند',
+    title_en: 'Adaptive Python virtualenv discovery (venv-paramiko212) for backend runtime',
+    changes: [
+      'پیاده‌سازی متد ماژولار resolvePythonExecutable جهت شناسایی خودکار محیط‌های مجازی اختصاصی نظیر venv-paramiko212 و متغیرهای VIRTUAL_ENV',
+      'تزریق خودکار متغیرهای محیطی PATH و VIRTUAL_ENV به پروسه پایتون جهت تضمین بارگذاری Paramiko 2.12.0 در اجرای SSH V2 Test & Fetch',
+      'ثبت لاگ تشخیصی و پروب سلامت نسخه پایتون و پارامیکو در زمان بالا آمدن سرور'
+    ],
+    changes_en: [
+      'Implemented resolvePythonExecutable to dynamically locate dedicated virtualenvs (such as venv-paramiko212) and active VIRTUAL_ENV environments',
+      'Automatically set PATH and VIRTUAL_ENV environment variables for spawned Python child processes to guarantee Paramiko 2.12.0 execution in SSH V2 Test & Fetch',
+      'Added diagnostic startup probing and logging of resolved Python executable and Paramiko library version'
+    ]
+  },
   {
     version: '1.177.1',
     releaseDate: '2026-09-28',

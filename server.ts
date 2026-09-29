@@ -2,9 +2,10 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
-import { spawn, exec, ChildProcess } from 'child_process';
+import { spawn, spawnSync, exec, ChildProcess } from 'child_process';
 import http from 'http';
 import net from 'net';
+import os from 'os';
 import { createServer as createViteServer } from 'vite';
 
 // Safely determine current directory and project root in both CJS bundle and TSX ESM dev mode
@@ -112,6 +113,60 @@ function killProcessOnPort(port: number): Promise<void> {
   });
 }
 
+/**
+ * Resolves the appropriate Python executable for the backend runtime.
+ * Checks for dedicated virtualenvs (e.g. venv-paramiko212), environment variables,
+ * or standard project virtualenv locations before falling back to system python.
+ */
+export function resolvePythonExecutable(root: string): { executable: string; isVenv: boolean; venvDir?: string } {
+  const isWin = process.platform === 'win32';
+  const binDir = isWin ? 'Scripts' : 'bin';
+  const exeName = isWin ? 'python.exe' : 'python3';
+  const altExeName = isWin ? 'python.exe' : 'python';
+
+  // 1. Explicit override via environment variables
+  if (process.env.PYTHON_PATH && fs.existsSync(process.env.PYTHON_PATH)) {
+    return { executable: process.env.PYTHON_PATH, isVenv: false };
+  }
+  if (process.env.PYTHON_CMD) {
+    return { executable: process.env.PYTHON_CMD, isVenv: false };
+  }
+
+  // 2. Active VIRTUAL_ENV environment variable
+  if (process.env.VIRTUAL_ENV) {
+    const venvExe = path.join(process.env.VIRTUAL_ENV, binDir, exeName);
+    if (fs.existsSync(venvExe)) return { executable: venvExe, isVenv: true, venvDir: process.env.VIRTUAL_ENV };
+    const venvAlt = path.join(process.env.VIRTUAL_ENV, binDir, altExeName);
+    if (fs.existsSync(venvAlt)) return { executable: venvAlt, isVenv: true, venvDir: process.env.VIRTUAL_ENV };
+  }
+
+  // 3. Known virtual environment locations relative to repository root or user home
+  const homeDir = os.homedir();
+  const candidateVenvDirs = [
+    path.join(root, 'venv-paramiko212'),
+    path.join(homeDir, 'Net-Management22', 'venv-paramiko212'),
+    path.join(homeDir, 'venv-paramiko212'),
+    path.join(homeDir, '.venv-paramiko212'),
+    path.join(root, '.venv'),
+    path.join(root, 'venv'),
+    path.join(homeDir, 'Net-Management22', '.venv'),
+  ];
+
+  for (const venvDir of candidateVenvDirs) {
+    const candidateExe = path.join(venvDir, binDir, exeName);
+    if (fs.existsSync(candidateExe)) {
+      return { executable: candidateExe, isVenv: true, venvDir };
+    }
+    const candidateAlt = path.join(venvDir, binDir, altExeName);
+    if (fs.existsSync(candidateAlt)) {
+      return { executable: candidateAlt, isVenv: true, venvDir };
+    }
+  }
+
+  // 4. Default system fallback
+  return { executable: isWin ? 'python' : 'python3', isVenv: false };
+}
+
 async function startPythonBackend(forceRestart = false) {
   if (isStartingPython) return;
   isStartingPython = true;
@@ -141,17 +196,44 @@ async function startPythonBackend(forceRestart = false) {
     }
 
     const pythonScript = path.join(projectRoot, 'backend', 'server.py');
-    console.log(`[Python Manager] Starting Python backend from ${pythonScript} on port ${PYTHON_PORT} (WS on ${PYTHON_WS_PORT})...`);
+    const { executable: pythonExe, isVenv, venvDir } = resolvePythonExecutable(projectRoot);
 
-    pythonProcess = spawn('python3', [pythonScript, String(PYTHON_PORT)], {
+    // Log resolved Python runtime details and Paramiko version
+    console.log(`[Python Manager] Resolved Python executable: ${pythonExe} (venv: ${isVenv ? venvDir : 'no'})`);
+    try {
+      const probe = spawnSync(pythonExe, ['-c', 'import sys, paramiko; print(f"Python {sys.version.split()[0]} | Paramiko {paramiko.__version__} | Path: {paramiko.__file__}")'], {
+        encoding: 'utf-8',
+        timeout: 3000,
+      });
+      if (probe.status === 0 && probe.stdout) {
+        console.log(`[Python Manager] Runtime verified: ${probe.stdout.trim()}`);
+      } else if (probe.stderr) {
+        console.warn(`[Python Manager] Runtime warning: ${probe.stderr.trim()}`);
+      }
+    } catch (e: any) {
+      console.warn(`[Python Manager] Could not probe Python runtime: ${e.message}`);
+    }
+
+    console.log(`[Python Manager] Starting Python backend with ${pythonExe} from ${pythonScript} on port ${PYTHON_PORT} (WS on ${PYTHON_WS_PORT})...`);
+
+    const spawnEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      BACKEND_PORT: String(PYTHON_PORT),
+      PYTHON_PORT: String(PYTHON_PORT),
+      PYTHON_WS_PORT: String(PYTHON_WS_PORT),
+      PYTHONUNBUFFERED: '1',
+    };
+
+    if (isVenv && venvDir) {
+      spawnEnv.VIRTUAL_ENV = venvDir;
+      const binPath = path.join(venvDir, process.platform === 'win32' ? 'Scripts' : 'bin');
+      spawnEnv.PATH = `${binPath}:${process.env.PATH || ''}`;
+    }
+
+    pythonProcess = spawn(pythonExe, [pythonScript, String(PYTHON_PORT)], {
       cwd: projectRoot,
       stdio: 'inherit',
-      env: {
-        ...process.env,
-        BACKEND_PORT: String(PYTHON_PORT),
-        PYTHON_PORT: String(PYTHON_PORT),
-        PYTHON_WS_PORT: String(PYTHON_WS_PORT),
-      }
+      env: spawnEnv,
     });
 
     pythonProcess.on('error', (err) => {
