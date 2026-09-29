@@ -746,19 +746,25 @@ app.post('/api/system/perform-update', async (req: Request, res: Response) => {
     }
 
     try {
-      // Configure network timeout and retry resilience for npm
-      await executeShell('npm config set fetch-retry-maxtimeout 180000 2>/dev/null || true', projectRoot, 5000);
-      await executeShell('npm config set fetch-retry-mintimeout 30000 2>/dev/null || true', projectRoot, 5000);
-      await executeShell('npm config set fetch-retries 5 2>/dev/null || true', projectRoot, 5000);
+      // Ensure clean registry config
+      await executeShell('npm config delete registry 2>/dev/null || true', projectRoot, 5000);
 
-      log('Running full npm install with all dependencies and devDependencies...');
-      try {
+      // Check if lockfile exists for clean deterministic ci install
+      const hasLockfile = fs.existsSync(path.join(projectRoot, 'package-lock.json'));
+      log(`Running npm dependency reconciliation (lockfile present: ${hasLockfile})...`);
+
+      if (hasLockfile && !isCleanMode) {
+        try {
+          await executeShell('NODE_ENV=development npm ci --include=dev', projectRoot, 180000);
+          log('NPM dependencies installed successfully via npm ci.');
+        } catch (ciErr: any) {
+          log(`npm ci encountered an issue: ${ciErr.message}. Falling back to npm install...`);
+          await executeShell('NODE_ENV=development npm install --include=dev --legacy-peer-deps --no-audit', projectRoot, 180000);
+          log('NPM dependencies installed successfully via npm install.');
+        }
+      } else {
         await executeShell('NODE_ENV=development npm install --include=dev --legacy-peer-deps --no-audit', projectRoot, 180000);
         log('NPM dependencies installed successfully.');
-      } catch (firstNpmErr: any) {
-        log(`Standard NPM install encountered issue: ${firstNpmErr.message}. Retrying with mirror registry...`);
-        await executeShell('NODE_ENV=development npm install --include=dev --legacy-peer-deps --no-audit --registry=https://registry.npmmirror.com', projectRoot, 180000);
-        log('NPM dependencies successfully installed via fallback mirror.');
       }
 
       // Ensure platform-specific native binaries for Rollup / esbuild on Linux

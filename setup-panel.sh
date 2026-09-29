@@ -614,40 +614,48 @@ fi
 # Guard memory, expand ulimits and allocate swap/shm to prevent 'Bus error (core dumped)' on VPS
 ensure_system_resources
 
-log_step "Installing NPM dependencies..."
-npm config set fetch-retry-maxtimeout 180000
-npm config set fetch-retry-mintimeout 30000
-npm config set fetch-retries 10
-
-# Configure isolated project-local TMPDIR on root filesystem to prevent /tmp noexec/size issues
-mkdir -p "$INSTALL_DIR/.tmp"
-export TMPDIR="$INSTALL_DIR/.tmp"
-chmod 777 "$INSTALL_DIR/.tmp" 2>/dev/null || true
-
-# Dynamic memory sizing based on detected system RAM
-SYS_MEM_MB=0
-if [ -f /proc/meminfo ]; then
-  SYS_MEM_MB=$(grep -i MemTotal /proc/meminfo | awk '{print int($2/1024)}')
-elif command -v free &>/dev/null; then
-  SYS_MEM_MB=$(free -m 2>/dev/null | awk '/Mem:/ {print $2}')
-fi
-SYS_MEM_MB=${SYS_MEM_MB:-1024}
-
-NODE_HEAP_MB=2048
-if [ "$SYS_MEM_MB" -ge 4000 ]; then
-  NODE_HEAP_MB=4096
-elif [ "$SYS_MEM_MB" -le 1500 ]; then
-  NODE_HEAP_MB=1536
+# Check whether dependencies are already satisfied to avoid reinstalling every time
+NEED_NPM_INSTALL=true
+if [ -d "$INSTALL_DIR/node_modules" ] && [ -f "$INSTALL_DIR/package.json" ]; then
+  LOCK_CHECKSUM=""
+  STORED_CHECKSUM=""
+  if [ -f "$INSTALL_DIR/package-lock.json" ]; then
+    LOCK_CHECKSUM=$(sha256sum "$INSTALL_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')
+  else
+    LOCK_CHECKSUM=$(sha256sum "$INSTALL_DIR/package.json" 2>/dev/null | awk '{print $1}')
+  fi
+  if [ -f "$INSTALL_DIR/node_modules/.installed_checksum" ]; then
+    STORED_CHECKSUM=$(cat "$INSTALL_DIR/node_modules/.installed_checksum" 2>/dev/null)
+  fi
+  if [ -n "$LOCK_CHECKSUM" ] && [ "$LOCK_CHECKSUM" = "$STORED_CHECKSUM" ]; then
+    NEED_NPM_INSTALL=false
+    log_success "NPM dependencies are already up-to-date. Skipping npm install."
+  fi
 fi
 
-export NODE_OPTIONS="--max-old-space-size=${NODE_HEAP_MB}"
-log_info "Node.js execution environment: Heap ${NODE_HEAP_MB}MB | OS Stack Limit: 64MB | System RAM: ${SYS_MEM_MB}MB"
+if [ "$NEED_NPM_INSTALL" = true ]; then
+  log_step "Installing NPM dependencies..."
+  # Clean up any leftover invalid or corrupted custom registry settings
+  npm config delete registry 2>/dev/null || true
 
-if ! npm install; then
-  log_warning "Standard npm install failed. Retrying with mirror registry (registry.npmmirror.com)..."
-  npm config set registry https://registry.npmmirror.com
-  npm install || { log_error "NPM installation failed."; exit 1; }
-  npm config delete registry
+  # Ensure clean, deterministic install
+  if [ -f "$INSTALL_DIR/package-lock.json" ]; then
+    log_info "Synchronized package-lock.json detected. Executing deterministic npm ci..."
+    if ! npm ci; then
+      log_warning "npm ci failed or lockfile discrepancy found. Falling back to npm install..."
+      npm install || { log_error "NPM installation failed."; exit 1; }
+    fi
+  else
+    log_info "No package-lock.json found. Executing npm install..."
+    npm install || { log_error "NPM installation failed."; exit 1; }
+  fi
+
+  # Record checksum of lockfile/package.json for subsequent runs
+  if [ -f "$INSTALL_DIR/package-lock.json" ]; then
+    sha256sum "$INSTALL_DIR/package-lock.json" 2>/dev/null | awk '{print $1}' > "$INSTALL_DIR/node_modules/.installed_checksum" || true
+  elif [ -f "$INSTALL_DIR/package.json" ]; then
+    sha256sum "$INSTALL_DIR/package.json" 2>/dev/null | awk '{print $1}' > "$INSTALL_DIR/node_modules/.installed_checksum" || true
+  fi
 fi
 
 # Detect architecture for native Rollup / esbuild packages

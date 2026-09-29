@@ -745,9 +745,26 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
           }, 20000);
         };
 
-        ws.onmessage = (event) => {
+        ws.onmessage = async (event) => {
+          let textData = '';
           try {
-            const msg = JSON.parse(event.data);
+            if (typeof event.data === 'string') {
+              textData = event.data;
+            } else if (event.data instanceof Blob) {
+              textData = await event.data.text();
+            } else if (event.data instanceof ArrayBuffer) {
+              textData = new TextDecoder('utf-8').decode(event.data);
+            } else if (ArrayBuffer.isView(event.data)) {
+              textData = new TextDecoder('utf-8').decode(event.data);
+            } else {
+              textData = String(event.data ?? '');
+            }
+          } catch {
+            textData = '';
+          }
+
+          try {
+            const msg = JSON.parse(textData);
             if (msg.type === 'pong') {
               // Keepalive acknowledged
               return;
@@ -763,21 +780,22 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
               setLifecycleEvents(msg.events);
               return;
             }
-            if (msg.type === 'data' && msg.data) {
-              console.log(`[FRONTEND-WS-DATA] chars=${msg.data.length} preview=${JSON.stringify(msg.data.slice(0, 100))}`);
-              if (firstDataChunkRef.current) {
-                firstDataChunkRef.current = false;
-                addLifecycleEvent(
-                  'output_reception',
-                  isEn ? 'Output Reception' : 'دریافت پاسخ از ترمینال',
-                  isEn
-                    ? `Received initial terminal data stream (${msg.data.length} chars)`
-                    : `اولین خروجی خط فرمان از تجهیز دریافت شد (${msg.data.length} کاراکتر)`,
-                  'success',
-                  { chars: msg.data.length }
-                );
+            if (msg.type === 'data' && typeof msg.data === 'string') {
+              if (msg.data.length > 0) {
+                if (firstDataChunkRef.current) {
+                  firstDataChunkRef.current = false;
+                  addLifecycleEvent(
+                    'output_reception',
+                    isEn ? 'Output Reception' : 'دریافت پاسخ از ترمینال',
+                    isEn
+                      ? `Received initial terminal data stream (${msg.data.length} chars)`
+                      : `اولین خروجی خط فرمان از تجهیز دریافت شد (${msg.data.length} کاراکتر)`,
+                    'success',
+                    { chars: msg.data.length }
+                  );
+                }
+                appendStreamText(msg.data);
               }
-              appendStreamText(msg.data);
             } else if (msg.type === 'status') {
               if (msg.status === 'connected') {
                 if (msg.is_real) {
@@ -974,15 +992,11 @@ export const CiscoTerminalModal: React.FC<CiscoTerminalModalProps> = ({
               }
             }
           } catch {
-            const rawStr = String(event.data || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
-            if (rawStr && rawStr !== getPrompt().trim()) {
-              appendLines([
-                {
-                  id: 'ws-raw-' + Date.now(),
-                  type: 'output',
-                  text: rawStr,
-                },
-              ]);
+            if (textData) {
+              const rawStr = textData.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+              if (rawStr && rawStr !== getPrompt().trim()) {
+                appendStreamText(textData);
+              }
             }
           }
         };

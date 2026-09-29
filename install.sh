@@ -447,11 +447,50 @@ export TMPDIR="$APP_DIR/.tmp"
 export NODE_OPTIONS="--max-old-space-size=${NODE_HEAP_MB}"
 rm -rf "$APP_DIR/dist" "$APP_DIR/node_modules/.vite" /tmp/esbuild* "$APP_DIR/.tmp"/* 2>/dev/null || true
 
-# Run npm install
-if [ -n "$SUDO_USER" ]; then
-  su - "$SUDO_USER" -c "cd '$APP_DIR' && export TMPDIR='$APP_DIR/.tmp' && npm install"
-else
-  npm install
+# Run npm install deterministically
+NEED_NPM_INSTALL=true
+if [ -d "$APP_DIR/node_modules" ] && [ -f "$APP_DIR/package.json" ]; then
+  LOCK_CHECKSUM=""
+  STORED_CHECKSUM=""
+  if [ -f "$APP_DIR/package-lock.json" ]; then
+    LOCK_CHECKSUM=$(sha256sum "$APP_DIR/package-lock.json" 2>/dev/null | awk '{print $1}')
+  else
+    LOCK_CHECKSUM=$(sha256sum "$APP_DIR/package.json" 2>/dev/null | awk '{print $1}')
+  fi
+  if [ -f "$APP_DIR/node_modules/.installed_checksum" ]; then
+    STORED_CHECKSUM=$(cat "$APP_DIR/node_modules/.installed_checksum" 2>/dev/null)
+  fi
+  if [ -n "$LOCK_CHECKSUM" ] && [ "$LOCK_CHECKSUM" = "$STORED_CHECKSUM" ]; then
+    NEED_NPM_INSTALL=false
+    echo -e "${GREEN}✓ بسته‌های NPM از قبل نصب و به‌روز هستند.${NC}"
+  fi
+fi
+
+if [ "$NEED_NPM_INSTALL" = true ]; then
+  # Reset any bad registry configuration
+  npm config delete registry 2>/dev/null || true
+  
+  if [ -f "$APP_DIR/package-lock.json" ]; then
+    echo -e "${CYAN}در حال نصب قطعی وابستگی‌های NPM با npm ci...${NC}"
+    if [ -n "$SUDO_USER" ]; then
+      su - "$SUDO_USER" -c "cd '$APP_DIR' && export TMPDIR='$APP_DIR/.tmp' && (npm ci || npm install)"
+    else
+      npm ci || npm install
+    fi
+  else
+    echo -e "${CYAN}در حال نصب وابستگی‌های NPM...${NC}"
+    if [ -n "$SUDO_USER" ]; then
+      su - "$SUDO_USER" -c "cd '$APP_DIR' && export TMPDIR='$APP_DIR/.tmp' && npm install"
+    else
+      npm install
+    fi
+  fi
+
+  if [ -f "$APP_DIR/package-lock.json" ]; then
+    sha256sum "$APP_DIR/package-lock.json" 2>/dev/null | awk '{print $1}' > "$APP_DIR/node_modules/.installed_checksum" || true
+  elif [ -f "$APP_DIR/package.json" ]; then
+    sha256sum "$APP_DIR/package.json" 2>/dev/null | awk '{print $1}' > "$APP_DIR/node_modules/.installed_checksum" || true
+  fi
 fi
 
 SYS_ARCH=$(uname -m)
