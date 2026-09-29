@@ -915,11 +915,13 @@ def connect_cisco_2960_ssh(
     if auth_failed:
         return False, last_err
 
-    # If the error is network unreachability or connection refused, no need to retry algorithms
-    if not is_handshake_or_algo_mismatch(Exception(last_err or "")):
-        return False, last_err
+    # Cisco Catalyst 2960/IOS legacy devices strictly require legacy KEX (DH Group 1/14 SHA1).
+    # Attempting Modern Fallback (TIER1_MODERN_KEX) here strips legacy KEX and masks the genuine Attempt 1
+    # error with a false 'Incompatible ssh peer (no acceptable kex algorithm)'. Therefore, return the authentic
+    # original error from Attempt 1 directly without executing Modern Fallback.
+    return False, last_err or f"Cisco SSH connection failed on {hostname}:{port}"
 
-    # 2. Modern Fallback (in case device is actually modern Cisco IOS-XE / Catalyst 9000)
+    # 2. Modern Fallback (retained for reference; intentionally bypassed for Cisco legacy devices)
     if on_fallback_log and callable(on_fallback_log):
         on_fallback_log(f"Attempting modern Cisco IOS-XE suite for {hostname}:{port}...")
 

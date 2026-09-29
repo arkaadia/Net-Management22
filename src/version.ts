@@ -10,9 +10,24 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.177.2';
+export const APP_VERSION = '1.177.3';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.177.3',
+    releaseDate: '2026-09-29',
+    type: 'patch',
+    title: 'جلوگیری از اجرای Modern Fallback برای تجهیزات لگاسی سیسکو در اتصال SSH',
+    title_en: 'Bypass Modern Fallback and preserve genuine negotiation errors for legacy Cisco SSH',
+    changes: [
+      'جلوگیری از رونویسی خطای اصلی تلاش اول با خطای کاذب عدم تطابق الگوریتم مدرن در اتصال به سوئیچ‌های سری ۲۹۶۰ و ۳۵۶۰',
+      'حفظ و بازگرداندن خطای واقعی مرحله مذاکره کلاینت سیسکو برای عیب‌یابی دقیق اتصال'
+    ],
+    changes_en: [
+      'Prevented overwriting authentic Attempt 1 SSH errors with false modern KEX rejection on Cisco Catalyst 2960/3560 devices',
+      'Preserved and returned authentic stage-specific negotiation errors for accurate connection diagnostics'
+    ]
+  },
   {
     version: '1.177.2',
     releaseDate: '2026-09-29',
