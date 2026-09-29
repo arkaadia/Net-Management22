@@ -117,7 +117,66 @@ export const SshV2TestResultCard: React.FC<SshV2TestResultCardProps> = ({
         )}
       </div>
 
-      {/* 2. Structured Telemetry Badges (Only on Success) */}
+      {/* 2. Failure Diagnostics & Actionable Troubleshooting Recommendations */}
+      {!isSuccess && (
+        <div className="my-3 space-y-2.5">
+          {/* Root Cause Box */}
+          <div
+            className={`p-3 rounded-lg border text-xs ${
+              isLightMode
+                ? 'bg-rose-100/70 border-rose-300 text-rose-900'
+                : 'bg-rose-950/60 border-rose-700/60 text-rose-200'
+            }`}
+          >
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <span className="font-bold text-[11px] uppercase tracking-wide block mb-0.5">
+                  {isEn ? 'Diagnosed Cause of Failure:' : 'علت اصلی عدم برقراری ارتباط:'}
+                </span>
+                <p className="font-semibold text-xs leading-relaxed">
+                  {result.diagnostic?.cause
+                    ? isEn
+                      ? result.diagnostic.cause_en || result.diagnostic.cause
+                      : result.diagnostic.cause_fa || result.diagnostic.cause
+                    : result.error || result.message}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Actionable Steps Box */}
+          {((result.diagnostic?.solution_steps && result.diagnostic.solution_steps.length > 0) ||
+            (result.troubleshooting && result.troubleshooting.length > 0)) && (
+            <div
+              className={`p-3 rounded-lg border text-xs ${
+                isLightMode
+                  ? 'bg-amber-50/80 border-amber-300/80 text-amber-950'
+                  : 'bg-amber-950/40 border-amber-600/40 text-amber-200'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-2 font-bold text-[11px] text-amber-700 dark:text-amber-400">
+                <Shield className="w-4 h-4" />
+                <span>{isEn ? 'Recommended Actionable Steps to Resolve:' : 'دستورالعمل‌های حل مشکل و برقراری موفق ارتباط:'}</span>
+              </div>
+              <ul className="space-y-1.5 pl-4 rtl:pl-0 rtl:pr-4 list-disc text-[11px] leading-relaxed">
+                {(result.diagnostic
+                  ? isEn
+                    ? result.diagnostic.solution_steps_en || result.diagnostic.solution_steps
+                    : result.diagnostic.solution_steps_fa || result.diagnostic.solution_steps
+                  : result.troubleshooting || []
+                ).map((step, sIdx) => (
+                  <li key={sIdx} className="font-medium">
+                    {step}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 3. Structured Telemetry Badges (Only on Success) */}
       {isSuccess && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 my-3 text-xs">
           {/* Box 1: SSH Protocol & Crypto */}

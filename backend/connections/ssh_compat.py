@@ -1396,7 +1396,8 @@ def connect_ssh_device(
     auth_timeout: float = 30.0,
     on_fallback_log: Optional[Any] = None,
     platform: str = "",
-    on_event: Optional[Any] = None
+    on_event: Optional[Any] = None,
+    selected_profile: Optional[str] = None
 ) -> Tuple[bool, Optional[str]]:
     """
     Universal SSH connection engine used across device introduction, interface status sync,
@@ -1415,8 +1416,8 @@ def connect_ssh_device(
 
     plat_lower = str(platform or "").lower()
 
-    # Route MikroTik RouterOS to dedicated ROSSSH engine if platform matches
-    if "mikrotik" in plat_lower or "routeros" in plat_lower:
+    # Route MikroTik RouterOS to dedicated ROSSSH engine if platform matches and not explicitly forcing a non-mikrotik profile
+    if ("mikrotik" in plat_lower or "routeros" in plat_lower) and selected_profile not in ["profile_1", "profile_2", "profile_3"]:
         return connect_mikrotik_ssh(
             client,
             hostname=hostname,
@@ -1430,13 +1431,17 @@ def connect_ssh_device(
         )
 
     # Determine order of profiles to attempt:
-    # If host is in cache, attempt the proven cached profile first!
-    ordered_keys = list(_PROFILE_ORDER)
-    cached_profile = _HOST_PROFILE_CACHE.get(hostname)
-    if cached_profile and cached_profile in ordered_keys:
-        ordered_keys.remove(cached_profile)
-        ordered_keys.insert(0, cached_profile)
-        logger.info(f"[SSH Profile Chain] Using cached profile '{cached_profile}' for {hostname}:{port}")
+    # If selected_profile is explicitly specified (e.g. 'profile_1', 'profile_2', 'profile_3'), prioritize or restrict to it!
+    if selected_profile and selected_profile in PROFILES_CONFIG:
+        ordered_keys = [selected_profile]
+        logger.info(f"[SSH Profile Chain] Using user-selected profile '{selected_profile}' for {hostname}:{port}")
+    else:
+        ordered_keys = list(_PROFILE_ORDER)
+        cached_profile = _HOST_PROFILE_CACHE.get(hostname)
+        if cached_profile and cached_profile in ordered_keys:
+            ordered_keys.remove(cached_profile)
+            ordered_keys.insert(0, cached_profile)
+            logger.info(f"[SSH Profile Chain] Using cached profile '{cached_profile}' for {hostname}:{port}")
 
     per_profile_errors: List[str] = []
 

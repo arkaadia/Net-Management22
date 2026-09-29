@@ -436,6 +436,15 @@ export interface SshV2TestFetchResult {
     mac?: string;
     remote_version?: string;
   };
+  diagnostic?: {
+    cause: string;
+    cause_en?: string;
+    cause_fa?: string;
+    solution_steps: string[];
+    solution_steps_en?: string[];
+    solution_steps_fa?: string[];
+  };
+  troubleshooting?: string[];
   message: string;
   message_en?: string;
   message_fa?: string;
@@ -450,9 +459,34 @@ export async function sshV2TestAndFetch(data: {
   ssh_password?: string;
   enable_password?: string;
   platform?: string;
+  selected_profile?: string;
   lang?: string;
 }): Promise<SshV2TestFetchResult> {
   const res = await fetch(`${API_BASE}/devices/ssh-v2-test-fetch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...data,
+      protocol: 'ssh',
+      connection_protocol: 'ssh',
+      force_python_ssh: true,
+    }),
+  });
+  return res.json();
+}
+
+export async function executeSshConnect(data: {
+  ip: string;
+  ssh_host?: string;
+  ssh_port?: number;
+  ssh_username?: string;
+  ssh_password?: string;
+  enable_password?: string;
+  platform?: string;
+  selected_profile?: string;
+  lang?: string;
+}): Promise<SshV2TestFetchResult> {
+  const res = await fetch(`${API_BASE}/devices/ssh-connect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

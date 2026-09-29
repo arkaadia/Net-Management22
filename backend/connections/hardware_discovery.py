@@ -534,6 +534,95 @@ def parse_mikrotik_output(raw_text: str) -> Tuple[Dict[str, Any], List[Dict[str,
     return hw, ports
 
 
+def analyze_ssh_failure_reason(error_str: str, ip: str, port: int, user: str, lang: str = "en") -> Dict[str, Any]:
+    """
+    Analyzes raw connection error and returns a root cause diagnosis with actionable steps.
+    """
+    is_en = (lang.lower() == "en")
+    e_low = (error_str or "").lower()
+    
+    cause_en = "General network or SSH protocol failure"
+    cause_fa = "خطای عمومی در لایه شبکه یا پروتکل SSH"
+    solution_en = [
+        f"Verify that host {ip} is powered on and accessible on TCP port {port}",
+        "Check network firewalls, routing tables, and Access Control Lists (ACLs)",
+        f"Confirm that SSH service is enabled on {ip}"
+    ]
+    solution_fa = [
+        f"اطمینان حاصل کنید دستگاه {ip} روشن بوده و پورت TCP {port} در دسترس است.",
+        "فایروال‌های شبکه، جدول‌های مسیریابی و لیست‌های دسترسی (ACL) را بررسی کنید.",
+        f"فعال بودن سرویس SSH را در دستگاه مقصد ({ip}) بررسی نمایید."
+    ]
+    
+    if "authentication" in e_low or "credentials rejected" in e_low or "password" in e_low or "auth failed" in e_low:
+        cause_en = f"Authentication Rejected: The device rejected the credentials provided for user '{user}'"
+        cause_fa = f"رد اعتبارنامه (Authentication Failed): نام کاربری '{user}' یا رمز عبور وارد شده توسط دستگاه پذیرفته نشد"
+        solution_en = [
+            f"Check if username '{user}' exists on {ip} with valid privileges",
+            "Verify password for typos or expired credentials",
+            "If using Cisco, ensure 'login local' or AAA configuration is enabled under 'line vty'",
+            "If password contains special characters, verify proper character escaping"
+        ]
+        solution_fa = [
+            f"بررسی کنید نام کاربری '{user}' روی دستگاه {ip} وجود داشته و دسترسی معتبر دارد.",
+            "رمز عبور وارد شده را جهت اطمینان از عدم تایپ اشتباه یا انقضای حساب کاربری بررسی کنید.",
+            "در سوئیچ‌های سیسکو مطمئن شوید دستور 'login local' یا کانفیگ AAA در بخش 'line vty 0 4' فعال است.",
+            "در صورت وجود کاراکترهای خاص در رمز، از صحت ارسال آن اطمینان حاصل کنید."
+        ]
+    elif "timed out" in e_low or "timeout" in e_low:
+        cause_en = f"Connection Timeout: Device {ip}:{port} did not respond within the allocated timeout window"
+        cause_fa = f"پایان مهلت زمانی (Connection Timeout): دستگاه مقصد ({ip}:{port}) در بازه زمانی تعیین‌شده پاسخ نداد"
+        solution_en = [
+            f"Verify IP reachability using Ping/ICMP to {ip}",
+            f"Confirm that target port {port} is open and listening for incoming SSH connections",
+            "Check for intermediate firewalls, NAT gateways, or security groups blocking port 22",
+            "Increase timeout or check if network latency/congestion is unusually high"
+        ]
+        solution_fa = [
+            f"با اجرای پینگ، ارتباط لایه ۳ با آدرس {ip} را بررسی کنید.",
+            f"اطمینان حاصل کنید پورت {port} روی تجهیز باز بوده و به درخواست‌های ورودی پاسخ می‌دهد.",
+            "فایروال‌های بین‌راهی، گیت‌وی‌های NAT و پالیسی‌های امنیتی فیلترکننده پورت ۲۲ را بررسی فرمایید.",
+            "در صورت بالا بودن تاخیر شبکه، زمان تایم‌اوت را افزایش دهید."
+        ]
+    elif "refused" in e_low:
+        cause_en = f"Connection Refused: Target host {ip} is active on the network, but rejected the connection on port {port}"
+        cause_fa = f"اتصال رد شد (Connection Refused): میزبان {ip} در شبکه پاسخگو است، اما پورت {port} غیرفعال یا رد می‌شود"
+        solution_en = [
+            f"Verify that the SSH server daemon (sshd) is running on {ip}",
+            "Check if the device uses a custom SSH port (e.g. 2222 instead of standard 22)",
+            "On Cisco devices, verify 'crypto key generate rsa' and 'ip ssh version 2' are configured",
+            "On MikroTik, check '/ip service print' to ensure the 'ssh' service is enabled"
+        ]
+        solution_fa = [
+            f"بررسی کنید دیمون SSH (مانند sshd) روی سیستم مقصد {ip} در حال اجرا باشد.",
+            "بررسی کنید آیا تجهیز از پورت سفارشی SSH استفاده می‌کند (مثلاً ۲۲۲۲ به جای ۲۲).",
+            "در تجهیزات سیسکو بررسی کنید دستورات 'crypto key generate rsa' و 'ip ssh version 2' اعمال شده باشد.",
+            "در میکروتیک، دستور '/ip service print' را بررسی کنید تا سرویس 'ssh' فعال باشد."
+        ]
+    elif "kex" in e_low or "incompatible" in e_low or "cipher" in e_low or "no acceptable" in e_low:
+        cause_en = "Cryptographic Mismatch: The device and client could not agree on Key Exchange (KEX) or Cipher suite"
+        cause_fa = "عدم انطباق الگوریتم‌های رمزنگاری (KEX/Cipher Mismatch): الگوریتم‌های تبادل کلید یا سایفر مورد توافق قرار نگرفت"
+        solution_en = [
+            "Use the 'Profile 3 (Full Legacy Cisco: DH Group 14/GEX/1, CBC, 3DES)' selector for older Cisco Catalyst models (e.g. 2960/3560/3750)",
+            "On older Cisco switches, ensure RSA keys of at least 1024 bits are generated ('crypto key generate rsa modulus 1024')",
+            "Ensure modern firmware or compatible SSH cipher suites are enabled on the target hardware"
+        ]
+        solution_fa = [
+            "برای سوئیچ‌های قدیمی‌تر سیسکو کاتالیست (مانند ۲۹۶۰/۳۵۶۰) از حالت 'پروفایل ۳ (سیسکو لگاسی: DH Group 14/GEX/1، CBC و 3DES)' استفاده کنید.",
+            "در سوئیچ سیسکو بررسی کنید کلید RSA حداقل ۱۰۲۴ بیتی تولید شده باشد ('crypto key generate rsa modulus 1024').",
+            "در صورت امکان فریمور تجهیز را به نگارش استاندارد پشتیبانی‌کننده از SSH-2 ارتقا دهید."
+        ]
+
+    return {
+        "cause": cause_en if is_en else cause_fa,
+        "cause_en": cause_en,
+        "cause_fa": cause_fa,
+        "solution_steps": solution_en if is_en else solution_fa,
+        "solution_steps_en": solution_en,
+        "solution_steps_fa": solution_fa
+    }
+
+
 def execute_real_hardware_probe(
     ip: str,
     port: int,
@@ -542,7 +631,8 @@ def execute_real_hardware_probe(
     enable_password: str = "",
     protocol: str = "ssh",
     platform: str = "cisco_ios",
-    lang: str = "en"
+    lang: str = "en",
+    selected_profile: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Establishes real SSH tunnel via Paramiko, executes show commands,
@@ -561,6 +651,7 @@ def execute_real_hardware_probe(
         if res_code != 0:
             err_msg_en = f"Connection failed to {ip}:{port} (TCP socket error code: {res_code}). Host is unreachable or port is closed."
             err_msg_fa = f"عدم برقراری ارتباط با {ip}:{port} (کد خطای سوکت: {res_code}). دستگاه پاسخگو نیست یا پورت بسته است."
+            diag = analyze_ssh_failure_reason(err_msg_en, ip, port, username, lang)
             return {
                 "success": False,
                 "connected": False,
@@ -569,11 +660,14 @@ def execute_real_hardware_probe(
                 "port": port,
                 "latency_ms": round((time.time() - start_t) * 1000, 1),
                 "error": err_msg_en if is_en else err_msg_fa,
-                "message": err_msg_en if is_en else err_msg_fa
+                "message": err_msg_en if is_en else err_msg_fa,
+                "diagnostic": diag,
+                "troubleshooting": diag["solution_steps"]
             }
     except Exception as ex:
         err_msg_en = f"Network socket error connecting to {ip}:{port}: {str(ex)}"
         err_msg_fa = f"خطای سوکت شبکه در اتصال به {ip}:{port}: {str(ex)}"
+        diag = analyze_ssh_failure_reason(err_msg_en, ip, port, username, lang)
         return {
             "success": False,
             "connected": False,
@@ -582,7 +676,9 @@ def execute_real_hardware_probe(
             "port": port,
             "latency_ms": round((time.time() - start_t) * 1000, 1),
             "error": err_msg_en if is_en else err_msg_fa,
-            "message": err_msg_en if is_en else err_msg_fa
+            "message": err_msg_en if is_en else err_msg_fa,
+            "diagnostic": diag,
+            "troubleshooting": diag["solution_steps"]
         }
 
     # 2. Real Paramiko SSH Tunnel with Legacy Cisco & Network Device Compatibility
@@ -613,7 +709,8 @@ def execute_real_hardware_probe(
         timeout=15.0,
         banner_timeout=30.0,
         auth_timeout=30.0,
-        platform=platform
+        platform=platform,
+        selected_profile=selected_profile
     )
 
     if not conn_ok:
@@ -624,6 +721,7 @@ def execute_real_hardware_probe(
         clean_err = str(conn_err or "Connection failed")
         err_en = f"SSH connection failed on {ip}:{port} for user '{username}': {clean_err}"
         err_fa = f"اتصال SSH در {ip}:{port} برای کاربر '{username}' ناموفق بود: {clean_err}"
+        diag = analyze_ssh_failure_reason(clean_err, ip, port, username, lang)
         return {
             "success": False,
             "connected": False,
@@ -632,7 +730,9 @@ def execute_real_hardware_probe(
             "port": port,
             "latency_ms": round((time.time() - start_t) * 1000, 1),
             "error": err_en if is_en else err_fa,
-            "message": err_en if is_en else err_fa
+            "message": err_en if is_en else err_fa,
+            "diagnostic": diag,
+            "troubleshooting": diag["solution_steps"]
         }
 
     try:

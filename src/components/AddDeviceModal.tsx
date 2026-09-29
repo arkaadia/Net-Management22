@@ -33,7 +33,7 @@ import {
   BookmarkPlus,
 } from 'lucide-react';
 import { Device, DeviceType, DevicePlatform, ConnectionMode, SwitchPort, ConfigTemplate, DeviceWebConfig, isMikroTikDevice } from '../types';
-import { fetchTemplates, testDeviceConnection, pingHost, fetchDevices, sshV2TestAndFetch, SshV2TestFetchResult } from '../services/api';
+import { fetchTemplates, testDeviceConnection, pingHost, fetchDevices, sshV2TestAndFetch, executeSshConnect, SshV2TestFetchResult } from '../services/api';
 import { useLanguage } from '../i18n';
 import { getDevicePortComment } from '../data/portSpecs';
 import { CiscoTerminalModal } from './CiscoTerminalModal';
@@ -145,6 +145,8 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
   const [sshTestResult, setSshTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null);
   const [isTestingSshV2, setIsTestingSshV2] = useState(false);
   const [sshV2Result, setSshV2Result] = useState<SshV2TestFetchResult | null>(null);
+  const [isConnectingSsh, setIsConnectingSsh] = useState(false);
+  const [selectedSshProfile, setSelectedSshProfile] = useState<string>('auto');
   const [isTestingPing, setIsTestingPing] = useState(false);
   const [pingTestResult, setPingTestResult] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null);
 
@@ -266,6 +268,8 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
     setSshTestResult(null);
     setSshV2Result(null);
     setIsTestingSshV2(false);
+    setIsConnectingSsh(false);
+    setSelectedSshProfile('auto');
     setPingTestResult(null);
     setError(null);
     setSelectedTemplateId('');
@@ -663,6 +667,7 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
         ssh_password: sshPassword,
         enable_password: enablePassword,
         platform,
+        selected_profile: selectedSshProfile === 'auto' ? undefined : selectedSshProfile,
         lang: isEn ? 'en' : 'fa',
       });
 
@@ -736,6 +741,77 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
       });
     } finally {
       setIsTestingSshV2(false);
+    }
+  };
+
+  const handleSshConnect = async () => {
+    const targetHost = (sshHost.trim() || ip.trim());
+    if (!targetHost) {
+      setError(isEn ? 'Please enter a target host or IP for SSH connection' : 'لطفاً ابتدا آدرس IP یا نام هاست را وارد کنید');
+      return;
+    }
+    try {
+      setIsConnectingSsh(true);
+      setSshV2Result(null);
+      setError(null);
+
+      const res = await executeSshConnect({
+        ip: targetHost,
+        ssh_host: targetHost,
+        ssh_port: Number(sshPort) || 22,
+        ssh_username: sshUsername.trim() || 'admin',
+        ssh_password: sshPassword,
+        enable_password: enablePassword,
+        platform,
+        selected_profile: selectedSshProfile === 'auto' ? undefined : selectedSshProfile,
+        lang: isEn ? 'en' : 'fa',
+      });
+
+      setSshV2Result(res);
+
+      if (res.success && res.connected) {
+        if (targetHost && !ip) setIp(targetHost);
+        if (res.device_hostname || res.hostname) setName(res.device_hostname || res.hostname || '');
+        if (res.model) setModel(res.model);
+        if (res.serial_number) setSerialNumber(res.serial_number);
+        if (res.mac) setMac(res.mac);
+        if (res.version || res.firmware) setFirmware(res.version || res.firmware || '');
+        if (res.uptime) setUptime(res.uptime);
+        if (res.platform_detected) setPlatform(res.platform_detected as DevicePlatform);
+        if (res.device_type && ['switch', 'router', 'access_point', 'firewall'].includes(res.device_type)) {
+          setType(res.device_type as DeviceType);
+        }
+        if (res.role_detected) setRole(res.role_detected);
+        if (res.power?.power_supplies) setPowerSupplies(res.power.power_supplies);
+        if (res.power?.power_watts) setPowerWatts(res.power.power_watts);
+        if (res.master_session_id) setMasterSessionId(res.master_session_id);
+        if (res.ports && res.ports.length > 0) {
+          setDiscoveredPorts(res.ports);
+          setTotalPorts(res.ports.length);
+          setIsPortsExpanded(true);
+        } else if (res.total_ports) {
+          setTotalPorts(res.total_ports);
+        }
+        setIsLockedByDiscovery(true);
+        setDiscoverySource(isEn ? 'Python SSH Live Bridge' : 'پل زنده اتصال SSH پایتون');
+      }
+    } catch (err: any) {
+      setSshV2Result({
+        success: false,
+        connected: false,
+        protocol: 'SSH',
+        ssh_protocol: 'SSH-2.0',
+        authenticated_user: sshUsername.trim() || 'admin',
+        ip: targetHost,
+        port: Number(sshPort) || 22,
+        latency_ms: 0,
+        message: isEn
+          ? `SSH connect error: ${err.message || 'Failed to connect'}`
+          : `خطای برقراری ارتباط SSH: ${err.message || 'عدم برقراری ارتباط'}`,
+        error: err.message,
+      });
+    } finally {
+      setIsConnectingSsh(false);
     }
   };
 
@@ -1667,7 +1743,39 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* SSH Method / Profile / Version Selector Navbar */}
+                  {connectionProtocol === 'ssh' && (
+                    <div className="flex items-center gap-1">
+                      <span className={`text-[10px] font-semibold ${isLightMode ? 'text-slate-600' : 'text-slate-400'}`}>
+                        {isEn ? 'Suite / Version:' : 'متد / نگارش SSH:'}
+                      </span>
+                      <select
+                        value={selectedSshProfile}
+                        onChange={(e) => setSelectedSshProfile(e.target.value)}
+                        className={`text-[11px] font-semibold font-mono py-1 px-2 rounded-lg border transition cursor-pointer focus:outline-none ${
+                          isLightMode
+                            ? 'bg-white border-slate-300 text-slate-800 focus:border-indigo-500 shadow-2xs'
+                            : 'bg-slate-900 border-slate-700 text-slate-200 focus:border-indigo-400'
+                        }`}
+                        title={isEn ? 'Select SSH negotiation protocol version / profile' : 'انتخاب روش و نگارش پروتکل اتصال SSH'}
+                      >
+                        <option value="auto">
+                          {isEn ? 'Auto Multi-Tier (Modern -> Fallback)' : 'خودکار هوشمند (مدرن + فال‌بک لگاسی)'}
+                        </option>
+                        <option value="profile_1">
+                          {isEn ? 'SSH v2 / Paramiko 2 (Modern: Curve25519/ECDH/GCM)' : 'SSH v2 / Paramiko 2 (مدرن: Curve25519/GCM)'}
+                        </option>
+                        <option value="profile_2">
+                          {isEn ? 'SSH v2 / Paramiko 2 (Group14-SHA1 + CBC + ssh-rsa)' : 'SSH v2 (متوسط: Group14-SHA1 + CBC)'}
+                        </option>
+                        <option value="profile_3">
+                          {isEn ? 'SSH v2 / Paramiko 2 (Legacy Cisco: DH Group1/GEX, 3DES)' : 'SSH v2 (سیسکو لگاسی: Group1/GEX/3DES)'}
+                        </option>
+                      </select>
+                    </div>
+                  )}
+
                   <div className={`inline-flex rounded-lg p-0.5 border text-[11px] font-semibold ${
                     isLightMode ? 'bg-white border-slate-300' : 'bg-slate-900 border-slate-700'
                   }`}>
@@ -1700,10 +1808,33 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
                   </div>
                   {connectionProtocol === 'ssh' ? (
                     <div className="flex items-center gap-2">
+                      {/* SSH Connect Button */}
+                      <button
+                        type="button"
+                        id="btn-ssh-connect"
+                        onClick={handleSshConnect}
+                        disabled={isConnectingSsh || isTestingSshV2}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white text-[11px] font-bold transition shadow-xs disabled:opacity-50 cursor-pointer"
+                        title={isEn ? 'Establish direct real SSH connection to device via Python backend' : 'برقراری اتصال مستقیم و واقعی SSH به تجهیز از طریق بک‌اند پایتون'}
+                      >
+                        {isConnectingSsh ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>{isEn ? 'Connecting SSH...' : 'در حال اتصال SSH...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Zap className="w-3.5 h-3.5 text-emerald-200" />
+                            <span>{isEn ? 'SSH Connect' : 'اتصال SSH (ssh connect)'}</span>
+                          </>
+                        )}
+                      </button>
+
+                      {/* SSH V2 Test & Fetch Button */}
                       <button
                         type="button"
                         onClick={handleSshV2TestFetch}
-                        disabled={isTestingSshV2}
+                        disabled={isTestingSshV2 || isConnectingSsh}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold transition shadow-xs disabled:opacity-50 cursor-pointer"
                       >
                         {isTestingSshV2 ? (
@@ -1713,7 +1844,7 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
                           </>
                         ) : (
                           <>
-                            <Zap className="w-3.5 h-3.5 text-amber-300" />
+                            <Terminal className="w-3.5 h-3.5 text-amber-300" />
                             <span>{isEn ? 'SSH V2 Test & Fetch' : 'تست و دریافت اطلاعات SSH V2'}</span>
                           </>
                         )}

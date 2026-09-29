@@ -2731,7 +2731,7 @@ class NetworkAPIHandler(BaseHTTPRequestHandler):
             })
             return
 
-        if path in ["/api/devices/test-connection", "/api/devices/ssh-v2-test-fetch"]:
+        if path in ["/api/devices/test-connection", "/api/devices/ssh-v2-test-fetch", "/api/devices/ssh-connect"]:
             # Test and establish REAL connection to device based on exact registered credentials and platform
             ip = body.get("ssh_host", body.get("ip", body.get("host", ""))).strip()
             proto = (body.get("protocol") or body.get("connection_protocol") or "ssh").lower()
@@ -2741,6 +2741,7 @@ class NetworkAPIHandler(BaseHTTPRequestHandler):
             pwd = body.get("ssh_password", body.get("password", "")).strip()
             enable_pwd = body.get("enable_password", "").strip()
             platform = body.get("platform", "cisco_ios")
+            selected_profile = body.get("selected_profile") or body.get("ssh_suite") or body.get("ssh_profile") or None
             lang = (body.get("lang") or ("en" if "en" in self.headers.get("Accept-Language", "").lower() else "fa")).lower()
             is_en = (lang == "en")
 
@@ -2761,7 +2762,8 @@ class NetworkAPIHandler(BaseHTTPRequestHandler):
                         enable_password=enable_pwd,
                         protocol=proto,
                         platform=platform,
-                        lang=lang
+                        lang=lang,
+                        selected_profile=selected_profile
                     )
 
                     if probe_res.get("success"):

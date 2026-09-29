@@ -10,9 +10,28 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.178.1';
+export const APP_VERSION = '1.179.0';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.179.0',
+    releaseDate: '2026-09-29',
+    type: 'minor',
+    title: 'افزودن دکمه «SSH Connect»، نوار انتخاب متد و نگارش‌های مختلف SSH و سیستم عیب‌یابی هوشمند در معرفی تجهیز جدید',
+    title_en: 'Added "SSH Connect" Action, SSH Suite/Version Selector Navbar, and Diagnostic Troubleshooting Engine in Introduce New Device',
+    changes: [
+      'افزودن دکمه اختصاصی «SSH Connect» در کنار تست SSH در فرم معرفی تجهیز جدید (Introduce New Device) جهت اتصال مستقیم، واقعی و بدون داده ماک به تجهیزات',
+      'ایجاد نوار انتخاب متد و نگارش پروتکل اتصال SSH (خودکار، مدرن با Curve25519/GCM، متوسط با Group14 و لگاسی سیسکو با Group1/GEX/3DES)',
+      'پیاده‌سازی اندپوینت اختصاصی /api/devices/ssh-connect در بک‌اند پایتون و هدایت امن از طریق پراکسی سرور',
+      'طراحی سیستم تحلیل علت ریشه‌ای خطاها (Diagnosed Cause of Failure) و ارائه راهکارهای عملی (Actionable Troubleshooting Steps) در صورت عدم برقراری ارتباط به دو زبان فارسی و انگلیسی'
+    ],
+    changes_en: [
+      'Added dedicated "SSH Connect" action button alongside SSH V2 Test & Fetch in the Introduce New Device modal with 100% authentic live data.',
+      'Introduced a dedicated Suite / Version selector navbar allowing users to force specific SSH profiles (Auto Multi-Tier, Modern Profile 1, Intermediate Profile 2, Legacy Cisco Profile 3).',
+      'Implemented dedicated /api/devices/ssh-connect endpoint on Python backend proxied directly from Node/Express server.',
+      'Engineered authentic root-cause diagnostic analysis and actionable troubleshooting steps with detailed localized error reporting.'
+    ]
+  },
   {
     version: '1.178.1',
     releaseDate: '2026-09-29',
