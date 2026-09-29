@@ -535,7 +535,7 @@ class NetworkTerminalSession:
             self.notify_status("failed", error=self.error_message)
             return False
 
-        term_name = "xterm-256color" if self.is_cisco else ("vt100" if self.is_mikrotik else "xterm")
+        term_name = "vt100" if (self.is_cisco or self.is_mikrotik) else "xterm"
         def handle_sub_event(stage, title, detail, level="info", meta=None):
             self.emit_event(stage, title, detail, level, meta)
 
@@ -544,10 +544,10 @@ class NetworkTerminalSession:
             port=self.port,
             username=self.username,
             password=self.password,
-            cols=self.cols,
-            rows=self.rows,
+            cols=self.cols or 200,
+            rows=self.rows or 50,
             term_name=term_name,
-            timeout=6.0,
+            timeout=15.0,
             on_status_msg=self.on_data_callback,
             platform=self.platform,
             on_event=handle_sub_event

@@ -2838,9 +2838,9 @@ class NetworkAPIHandler(BaseHTTPRequestHandler):
                             port=port,
                             username=user,
                             password=pwd,
-                            timeout=5.0,
-                            banner_timeout=5.0,
-                            auth_timeout=5.0,
+                            timeout=15.0,
+                            banner_timeout=30.0,
+                            auth_timeout=30.0,
                             platform=platform
                         )
                         if not auth_ok:

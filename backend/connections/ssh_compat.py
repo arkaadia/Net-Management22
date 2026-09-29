@@ -996,146 +996,393 @@ def _emit_event_safe(on_event: Optional[Any], stage: str, title: str, detail: st
             logger.debug(f"[ssh_compat] Event callback error: {e}")
 
 
+# ==============================================================================
+# 3-Profile Negotiation Architecture & Fallback Chain
+#
+# Profile 1: Modern Defaults (Curve25519, ECDH-SHA2, AES-CTR/GCM, Ed25519/RSA-SHA2)
+# Profile 2: Modern + Group14-SHA1 + CBC ciphers + ssh-rsa
+# Profile 3: Full Legacy Cisco (Group14, Group-Exchange, Group1, all CBC, 3DES, HMAC-SHA1, ssh-rsa)
+# ==============================================================================
+
+PROFILE_1_KEX: Tuple[str, ...] = (
+    'curve25519-sha256',
+    'curve25519-sha256@libssh.org',
+    'ecdh-sha2-nistp256',
+    'ecdh-sha2-nistp384',
+    'ecdh-sha2-nistp521',
+    'diffie-hellman-group16-sha512',
+    'diffie-hellman-group18-sha512',
+    'diffie-hellman-group14-sha256',
+)
+
+PROFILE_1_CIPHERS: Tuple[str, ...] = (
+    'aes128-ctr',
+    'aes192-ctr',
+    'aes256-ctr',
+    'aes128-gcm@openssh.com',
+    'aes256-gcm@openssh.com',
+    'chacha20-poly1305@openssh.com',
+)
+
+PROFILE_1_MACS: Tuple[str, ...] = (
+    'hmac-sha2-256-etm@openssh.com',
+    'hmac-sha2-512-etm@openssh.com',
+    'hmac-sha2-256',
+    'hmac-sha2-512',
+)
+
+PROFILE_1_KEYS: Tuple[str, ...] = (
+    'ssh-ed25519',
+    'ecdsa-sha2-nistp256',
+    'ecdsa-sha2-nistp384',
+    'ecdsa-sha2-nistp521',
+    'rsa-sha2-512',
+    'rsa-sha2-256',
+)
+
+PROFILE_2_KEX: Tuple[str, ...] = (
+    'diffie-hellman-group14-sha1',
+) + PROFILE_1_KEX
+
+PROFILE_2_CIPHERS: Tuple[str, ...] = (
+    'aes128-ctr',
+    'aes192-ctr',
+    'aes256-ctr',
+    'aes128-cbc',
+    'aes192-cbc',
+    'aes256-cbc',
+)
+
+PROFILE_2_MACS: Tuple[str, ...] = (
+    'hmac-sha2-256',
+    'hmac-sha1',
+    'hmac-sha1-96',
+    'hmac-md5',
+)
+
+PROFILE_2_KEYS: Tuple[str, ...] = (
+    'ssh-ed25519',
+    'ecdsa-sha2-nistp256',
+    'rsa-sha2-512',
+    'rsa-sha2-256',
+    'ssh-rsa',
+)
+
+PROFILE_3_KEX: Tuple[str, ...] = (
+    'diffie-hellman-group14-sha1',
+    'diffie-hellman-group-exchange-sha1',
+    'diffie-hellman-group1-sha1',
+    'diffie-hellman-group-exchange-sha256',
+    'diffie-hellman-group14-sha256',
+    'curve25519-sha256',
+    'curve25519-sha256@libssh.org',
+    'ecdh-sha2-nistp256',
+)
+
+PROFILE_3_CIPHERS: Tuple[str, ...] = (
+    'aes128-ctr',
+    'aes192-ctr',
+    'aes256-ctr',
+    'aes128-cbc',
+    'aes192-cbc',
+    'aes256-cbc',
+    '3des-cbc',
+)
+
+PROFILE_3_MACS: Tuple[str, ...] = (
+    'hmac-sha2-256',
+    'hmac-sha1',
+    'hmac-sha1-96',
+    'hmac-md5',
+)
+
+PROFILE_3_KEYS: Tuple[str, ...] = (
+    'ssh-ed25519',
+    'ecdsa-sha2-nistp256',
+    'rsa-sha2-512',
+    'rsa-sha2-256',
+    'ssh-rsa',
+)
+
+PROFILES_CONFIG: Dict[str, Dict[str, Any]] = {
+    "profile_1": {
+        "id": "profile_1",
+        "name": "profile 1 (modern defaults)",
+        "label": "Profile 1 (Modern Defaults)",
+        "kex": PROFILE_1_KEX,
+        "ciphers": PROFILE_1_CIPHERS,
+        "macs": PROFILE_1_MACS,
+        "keys": PROFILE_1_KEYS,
+        "tier": "tier1_modern",
+    },
+    "profile_2": {
+        "id": "profile_2",
+        "name": "profile 2 (modern + group14-sha1 + CBC + ssh-rsa)",
+        "label": "Profile 2 (Modern + Group14-SHA1 + CBC + ssh-rsa)",
+        "kex": PROFILE_2_KEX,
+        "ciphers": PROFILE_2_CIPHERS,
+        "macs": PROFILE_2_MACS,
+        "keys": PROFILE_2_KEYS,
+        "tier": "tier2_intermediate",
+    },
+    "profile_3": {
+        "id": "profile_3",
+        "name": "profile 3 (full legacy Cisco)",
+        "label": "Profile 3 (Full Legacy Cisco: DH Group 14/GEX/1, CBC, 3DES, ssh-rsa)",
+        "kex": PROFILE_3_KEX,
+        "ciphers": PROFILE_3_CIPHERS,
+        "macs": PROFILE_3_MACS,
+        "keys": PROFILE_3_KEYS,
+        "tier": "tier3_legacy_cisco",
+    },
+}
+
+_PROFILE_ORDER: List[str] = ["profile_1", "profile_2", "profile_3"]
+
+# In-memory per-host profile cache so subsequent sessions go straight to the working profile
+_HOST_PROFILE_CACHE: Dict[str, str] = {}
+
+
+def _filter_algorithms_for_transport(
+    transport: Any,
+    kex_candidates: Tuple[str, ...],
+    cipher_candidates: Tuple[str, ...],
+    mac_candidates: Tuple[str, ...],
+    key_candidates: Tuple[str, ...]
+) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]:
+    """
+    Safely filters candidates against paramiko.Transport's registered tables
+    (_kex_info, _cipher_info, _mac_info, _key_info) so an unsupported name
+    never causes a KeyError or exception.
+    """
+    import paramiko
+
+    # 1. KEX filtering
+    kex_table = getattr(transport, '_kex_info', None) or getattr(paramiko.Transport, '_kex_info', {})
+    if isinstance(kex_table, dict) and kex_table:
+        filtered_kex = tuple(k for k in kex_candidates if k in kex_table)
+    else:
+        existing = getattr(transport, '_preferred_kex', None) or getattr(paramiko.Transport, '_preferred_kex', ())
+        filtered_kex = tuple(k for k in kex_candidates if k in existing)
+
+    # 2. Cipher filtering
+    cipher_table = getattr(transport, '_cipher_info', None) or getattr(paramiko.Transport, '_cipher_info', {})
+    if isinstance(cipher_table, dict) and cipher_table:
+        filtered_ciphers = tuple(c for c in cipher_candidates if c in cipher_table)
+    else:
+        existing = getattr(transport, '_preferred_ciphers', None) or getattr(paramiko.Transport, '_preferred_ciphers', ())
+        filtered_ciphers = tuple(c for c in cipher_candidates if c in existing)
+
+    # 3. MAC filtering
+    mac_table = getattr(transport, '_mac_info', None) or getattr(paramiko.Transport, '_mac_info', {})
+    if isinstance(mac_table, dict) and mac_table:
+        filtered_macs = tuple(m for m in mac_candidates if m in mac_table)
+    else:
+        existing = getattr(transport, '_preferred_macs', None) or getattr(paramiko.Transport, '_preferred_macs', ())
+        filtered_macs = tuple(m for m in mac_candidates if m in existing)
+
+    # 4. Key filtering
+    key_table = getattr(transport, '_key_info', None) or getattr(paramiko.Transport, '_key_info', {})
+    if isinstance(key_table, dict) and key_table:
+        filtered_keys = tuple(k for k in key_candidates if k in key_table)
+    else:
+        existing = getattr(transport, '_preferred_keys', None) or getattr(paramiko.Transport, '_preferred_keys', ())
+        filtered_keys = tuple(k for k in key_candidates if k in existing)
+
+    return filtered_kex, filtered_ciphers, filtered_macs, filtered_keys
+
+
+def _apply_profile_to_transport(transport: Any, profile_dict: Dict[str, Any]) -> None:
+    """
+    Sets preferred algorithms explicitly on the Transport instance (per-instance, not global)
+    BEFORE calling transport.start_client().
+    """
+    kex_filtered, ciphers_filtered, macs_filtered, keys_filtered = _filter_algorithms_for_transport(
+        transport,
+        profile_dict["kex"],
+        profile_dict["ciphers"],
+        profile_dict["macs"],
+        profile_dict["keys"]
+    )
+
+    # Explicit per-instance preferred algorithm assignment
+    transport._preferred_kex = kex_filtered
+    transport._preferred_ciphers = ciphers_filtered
+    transport._preferred_macs = macs_filtered
+    transport._preferred_keys = keys_filtered
+
+    # Also update SecurityOptions object if available
+    try:
+        sec = transport.get_security_options()
+        if kex_filtered:
+            sec.kex = list(kex_filtered)
+        if ciphers_filtered:
+            sec.ciphers = list(ciphers_filtered)
+        if macs_filtered:
+            sec.digests = list(macs_filtered)
+        if keys_filtered:
+            sec.key_types = list(keys_filtered)
+    except Exception:
+        pass
+
+
+def _authenticate_transport_robust(
+    transport: Any,
+    username: str,
+    password: str,
+    auth_timeout: float = 30.0
+) -> Tuple[bool, Optional[str]]:
+    """
+    Authenticates using transport.auth_password(); if that fails tries auth_interactive
+    with keyboard-interactive prompt handler answering with password.
+    Equivalent to look_for_keys=False and allow_agent=False.
+    """
+    import paramiko
+    auth_ok = False
+    err_msg = None
+
+    # Step 1: standard password auth
+    try:
+        transport.auth_password(username=username, password=password)
+        auth_ok = transport.is_authenticated()
+        if auth_ok:
+            return True, None
+    except (paramiko.BadAuthenticationType, paramiko.AuthenticationException) as e:
+        err_msg = str(e)
+    except Exception as e:
+        err_msg = str(e)
+
+    # Step 2: keyboard-interactive fallback (e.g. AAA/TACACS+/RADIUS on Cisco switches)
+    try:
+        def interactive_handler(title, instructions, prompt_list):
+            return [password for _ in prompt_list]
+
+        transport.auth_interactive(username=username, handler=interactive_handler)
+        auth_ok = transport.is_authenticated()
+        if auth_ok:
+            return True, None
+    except Exception as e_int:
+        err_msg = str(e_int) or err_msg
+
+    return auth_ok, err_msg
+
+
+def _attempt_ssh_profile(
+    hostname: str,
+    port: int,
+    username: str,
+    password: str,
+    profile_dict: Dict[str, Any],
+    timeout: float = 15.0,
+    banner_timeout: float = 30.0,
+    auth_timeout: float = 30.0,
+    on_event: Optional[Any] = None
+) -> Tuple[bool, Optional[Any], Optional[str], str]:
+    """
+    Attempts to establish an SSH connection with a fresh socket and Transport
+    using the specified profile algorithms.
+    Returns: (success, transport, error_classification, stage_failed)
+    """
+    import paramiko
+    sock = None
+    transport = None
+    stage = "tcp_connect"
+
+    try:
+        stage = "tcp_connect"
+        _emit_event_safe(on_event, "tcp_connect", "TCP Connection Initiated", f"Opening TCP stream to {hostname}:{port} [{profile_dict['name']}]", "info")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((hostname, port))
+        _emit_event_safe(on_event, "tcp_established", "TCP Connection Established", f"TCP connection established with {hostname}:{port}", "success")
+
+        stage = "kex_negotiation"
+        _emit_event_safe(on_event, "ssh_negotiation", "SSH Negotiation Started", f"Configuring Transport with {profile_dict['name']}", "info")
+        transport = paramiko.Transport(sock)
+
+        # Set algorithms explicitly on the Transport instance BEFORE calling start_client()
+        _apply_profile_to_transport(transport, profile_dict)
+
+        transport.start_client(timeout=banner_timeout)
+        _emit_event_safe(on_event, "key_exchange", "Key Exchange Negotiation", f"KEX agreed on {profile_dict['name']}", "info")
+
+        stage = "authentication"
+        _emit_event_safe(on_event, "authentication", "Authentication Attempt", f"Authenticating user '{username}'", "info")
+        auth_ok, auth_err = _authenticate_transport_robust(transport, username=username, password=password, auth_timeout=auth_timeout)
+
+        if auth_ok:
+            _emit_event_safe(on_event, "authentication_success", "Authentication Successful", f"User '{username}' authenticated successfully", "success")
+            return True, transport, None, "success"
+        else:
+            return False, transport, f"kex ok but auth failed: {auth_err or 'credentials rejected'}", "authentication"
+
+    except Exception as exc:
+        err_str = str(exc).strip()
+        if stage == "tcp_connect":
+            if "timed out" in err_str.lower() or "timeout" in err_str.lower():
+                classified = f"connection timeout on {hostname}:{port} (socket timeout {timeout}s)"
+            elif "refused" in err_str.lower():
+                classified = f"connection refused on {hostname}:{port}"
+            else:
+                classified = f"TCP network error: {err_str}"
+        elif stage == "kex_negotiation":
+            if "incompatible" in err_str.lower() or "no acceptable" in err_str.lower() or "kex" in err_str.lower() or "cipher" in err_str.lower():
+                classified = f"kex/cipher negotiation failed: {err_str}"
+            elif "timed out" in err_str.lower() or "timeout" in err_str.lower():
+                classified = f"kex handshake timed out after {banner_timeout}s"
+            elif any(w in err_str.lower() for w in ["closed", "reset", "eof"]):
+                classified = f"peer closed connection during negotiation: {err_str}"
+            else:
+                classified = f"SSH negotiation error: {err_str}"
+        elif stage == "authentication":
+            classified = f"kex ok but auth failed: {err_str}"
+        else:
+            classified = err_str
+
+        # Cleanup failed transport and socket
+        if transport:
+            try:
+                transport.close()
+            except Exception:
+                pass
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+        return False, None, classified, stage
+
+
 def connect_cisco_2960_ssh(
     client: Any,
     hostname: str,
     port: int = 22,
     username: str = "",
     password: str = "",
-    timeout: float = 6.0,
-    banner_timeout: float = 6.0,
-    auth_timeout: float = 6.0,
+    timeout: float = 15.0,
+    banner_timeout: float = 30.0,
+    auth_timeout: float = 30.0,
     on_fallback_log: Optional[Any] = None,
     on_event: Optional[Any] = None
 ) -> Tuple[bool, Optional[str]]:
     """
-    Dedicated Adaptive SSH Engine for Cisco Catalyst 2960, 3560, 3750 and Cisco IOS 12/15 devices.
-    Prioritizes Cisco native cryptographic suites (DH Group 14/1 SHA1, ssh-rsa, AES-CBC, 3DES-CBC)
-    to prevent older IOS packet aborts, seamlessly falling back to modern suites if peer is IOS-XE.
+    Dedicated entry point for Cisco Catalyst 2960, 3560, and legacy IOS devices.
+    Delegates directly to the unified multi-profile fallback engine with Cisco platform tag.
     """
-    ensure_paramiko_compatibility()
-    import paramiko
-
-    # 1. Attempt Cisco 2960 / Catalyst Native Suite
-    sock = None
-    transport = None
-    last_err = None
-    auth_failed = False
-    stage = "tcp_connect"
-
-    try:
-        stage = "tcp_connect"
-        _emit_event_safe(on_event, "tcp_connect", "TCP Connection Initiated", f"Opening TCP stream to {hostname}:{port}", "info")
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect((hostname, port))
-        _emit_event_safe(on_event, "tcp_established", "TCP Connection Established", f"TCP connection established with {hostname}:{port}", "success")
-
-        stage = "ssh_negotiation"
-        transport = CiscoCompatibleTransport(sock)
-        apply_security_options_safely(
-            transport,
-            kex_candidates=CISCO_2960_KEX,
-            key_candidates=CISCO_2960_KEYS,
-            cipher_candidates=CISCO_2960_CIPHERS,
-            mac_candidates=CISCO_2960_MACS
-        )
-        _emit_event_safe(on_event, "ssh_negotiation", "SSH Negotiation Started", "Initializing Paramiko Transport with Cisco Catalyst algorithm suite", "info")
-        transport.start_client(timeout=banner_timeout)
-        remote_ver = str(getattr(transport, "remote_version", "") or "")
-        _emit_event_safe(on_event, "ssh_protocol", "SSH Protocol Exchange", f"Remote SSH Protocol: {remote_ver or 'SSH-2.0'}", "info", {"remote_version": remote_ver})
-        _emit_event_safe(on_event, "key_exchange", "Key Exchange Negotiation", "Agreed on Cisco compatible KEX parameters (DH Group 14/1)", "info")
-        remote_key = transport.get_remote_server_key()
-        key_name = remote_key.get_name() if remote_key else "unknown"
-        _emit_event_safe(on_event, "host_key_negotiation", "Host Key Negotiation", f"Host key negotiated: {key_name}", "info", {"key_type": key_name})
-
-        stage = "authentication"
-        _emit_event_safe(on_event, "authentication", "Authentication Attempt", f"Submitting credentials for user '{username}'", "info")
-        auth_ok, auth_err = authenticate_transport(transport, username=username, password=password)
-
-        if auth_ok:
-            _emit_event_safe(on_event, "authentication_success", "Authentication Successful", f"User '{username}' authenticated successfully", "success")
-            client._transport = transport
-            client._negotiation_info = extract_negotiation_info(transport, "cisco_2960_native")
-            logger.info(
-                f"[Cisco 2960 SSH] Connected successfully to {hostname}:{port} | "
-                f"KEX: {client._negotiation_info['kex']} | "
-                f"Cipher: {client._negotiation_info['cipher']} | "
-                f"Key: {client._negotiation_info['key_type']}"
-            )
-            return True, None
-        else:
-            auth_failed = True
-            last_err = auth_err or f"Authentication failed for user '{username}' on Cisco switch"
-            _emit_event_safe(on_event, "authentication_failure", "Authentication Failed", last_err, "error")
-    except Exception as e:
-        if stage == "tcp_connect":
-            last_err = f"TCP connection failed to {hostname}:{port}: {e}"
-        elif stage == "ssh_negotiation":
-            last_err = f"SSH key exchange/cipher negotiation failed on {hostname}:{port}: {e}"
-        elif stage == "authentication":
-            last_err = f"SSH authentication error for user '{username}' on {hostname}:{port}: {e}"
-        else:
-            last_err = str(e).strip()
-        logger.debug(f"[Cisco 2960 SSH] Primary attempt notice ({stage}): {e}")
-    finally:
-        if not getattr(client, '_transport', None) or client._transport is not transport:
-            if transport:
-                try: transport.close()
-                except Exception: pass
-            if sock:
-                try: sock.close()
-                except Exception: pass
-
-    if auth_failed:
-        return False, last_err
-
-    # Cisco Catalyst 2960/IOS legacy devices strictly require legacy KEX (DH Group 1/14 SHA1).
-    # Attempting Modern Fallback (TIER1_MODERN_KEX) here strips legacy KEX and masks the genuine Attempt 1
-    # error with a false 'Incompatible ssh peer (no acceptable kex algorithm)'. Therefore, return the authentic
-    # original error from Attempt 1 directly without executing Modern Fallback.
-    return False, last_err or f"Cisco SSH connection failed on {hostname}:{port}"
-
-    # 2. Modern Fallback (retained for reference; intentionally bypassed for Cisco legacy devices)
-    if on_fallback_log and callable(on_fallback_log):
-        on_fallback_log(f"Attempting modern Cisco IOS-XE suite for {hostname}:{port}...")
-
-    sock_m = None
-    transport_m = None
-    try:
-        sock_m = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock_m.settimeout(timeout)
-        sock_m.connect((hostname, port))
-
-        transport_m = paramiko.Transport(sock_m)
-        apply_security_options_safely(
-            transport_m,
-            kex_candidates=TIER1_MODERN_KEX,
-            key_candidates=TIER1_MODERN_KEYS,
-            cipher_candidates=TIER1_MODERN_CIPHERS,
-            mac_candidates=TIER1_MODERN_MACS
-        )
-        transport_m.start_client(timeout=banner_timeout)
-        auth_ok_m, auth_err_m = authenticate_transport(transport_m, username=username, password=password)
-
-        if auth_ok_m:
-            client._transport = transport_m
-            client._negotiation_info = extract_negotiation_info(transport_m, "cisco_modern_fallback")
-            return True, None
-        else:
-            last_err = auth_err_m or f"Authentication failed for user '{username}'"
-    except Exception as e_m:
-        last_err = str(e_m).strip() or last_err
-    finally:
-        if not getattr(client, '_transport', None) or client._transport is not transport_m:
-            if transport_m:
-                try: transport_m.close()
-                except Exception: pass
-            if sock_m:
-                try: sock_m.close()
-                except Exception: pass
-
-    return False, last_err or f"Cisco SSH connection failed on {hostname}:{port}"
+    return connect_ssh_device(
+        client=client,
+        hostname=hostname,
+        port=port,
+        username=username,
+        password=password,
+        timeout=timeout,
+        banner_timeout=banner_timeout,
+        auth_timeout=auth_timeout,
+        on_fallback_log=on_fallback_log,
+        platform="cisco_ios",
+        on_event=on_event
+    )
 
 
 def connect_ssh_device(
@@ -1144,34 +1391,31 @@ def connect_ssh_device(
     port: int = 22,
     username: str = "",
     password: str = "",
-    timeout: float = 6.0,
-    banner_timeout: float = 6.0,
-    auth_timeout: float = 6.0,
+    timeout: float = 15.0,
+    banner_timeout: float = 30.0,
+    auth_timeout: float = 30.0,
     on_fallback_log: Optional[Any] = None,
     platform: str = "",
     on_event: Optional[Any] = None
 ) -> Tuple[bool, Optional[str]]:
     """
-    Connects to a network device using the Two-Tier Adaptive Negotiation Engine:
-    - Tier 1 (Modern Fast Path): Connects using modern algorithms (Curve25519, ECDH, CTR/GCM, Ed25519/RSA-SHA2).
-      Fast path for 100% of modern infrastructure with zero latency penalty or legacy overhead.
-    - Tier 2 (Adaptive Legacy Fallback): If (and only if) Tier 1 fails on algorithm/KEX mismatch,
-      automatically retries with legacy Cisco algorithms (DH Group 14/1, ssh-rsa, AES-CBC, 3DES).
-    - Cisco 2960 / Catalyst Suite: When target platform is Cisco 2960 or Catalyst IOS, runs
-      the Cisco 2960 optimized cryptographic suite with graceful modern fallback.
-    - MikroTik RouterOS Engine: When target platform is MikroTik (or ROSSSH is identified), executes
-      hardened MikroTik SSH negotiation bypassing RFC 8332 bug and auth_none/password quirks.
+    Universal SSH connection engine used across device introduction, interface status sync,
+    and terminal console.
     
-    Guaranteed zero 'unknown cipher' errors via safe dictionary reflection.
-    Returns (True, None) on success, or (False, error_message) on failure.
-    Attaches `client._negotiation_info` with the negotiated parameters.
+    Implements an automatic fallback chain of profiles, tried in order until one succeeds,
+    each with a fresh socket + Transport:
+      a) Profile 1: Modern defaults
+      b) Profile 2: Modern + group14-sha1 + CBC ciphers + ssh-rsa
+      c) Profile 3: Full legacy Cisco (group1-sha1, group-exchange-sha1, all CBC, 3des-cbc, hmac-sha1, ssh-rsa)
+    
+    Remembers successful profile per device host in cache for instant subsequent connections.
+    Distinguishes clearly between connection timeout, kex/cipher failure, and authentication failure.
     """
     ensure_paramiko_compatibility()
-    import paramiko
 
     plat_lower = str(platform or "").lower()
 
-    # Check if target platform is explicitly MikroTik
+    # Route MikroTik RouterOS to dedicated ROSSSH engine if platform matches
     if "mikrotik" in plat_lower or "routeros" in plat_lower:
         return connect_mikrotik_ssh(
             client,
@@ -1185,204 +1429,61 @@ def connect_ssh_device(
             on_fallback_log=on_fallback_log
         )
 
-    # Check if target platform is Cisco Catalyst 2960 or Cisco IOS
-    if any(k in plat_lower for k in ["2960", "catalyst", "cisco_ios", "cisco"]):
-        return connect_cisco_2960_ssh(
-            client,
+    # Determine order of profiles to attempt:
+    # If host is in cache, attempt the proven cached profile first!
+    ordered_keys = list(_PROFILE_ORDER)
+    cached_profile = _HOST_PROFILE_CACHE.get(hostname)
+    if cached_profile and cached_profile in ordered_keys:
+        ordered_keys.remove(cached_profile)
+        ordered_keys.insert(0, cached_profile)
+        logger.info(f"[SSH Profile Chain] Using cached profile '{cached_profile}' for {hostname}:{port}")
+
+    per_profile_errors: List[str] = []
+
+    for profile_key in ordered_keys:
+        profile_dict = PROFILES_CONFIG[profile_key]
+        if on_fallback_log and callable(on_fallback_log):
+            try:
+                on_fallback_log(f"Attempting {profile_dict['name']} on {hostname}:{port}...")
+            except Exception:
+                pass
+
+        logger.info(f"[SSH Profile Chain] Trying {profile_dict['name']} on {hostname}:{port} (timeout={timeout}s, banner_timeout={banner_timeout}s)")
+        
+        ok, transport, err_classified, stage_failed = _attempt_ssh_profile(
             hostname=hostname,
             port=port,
             username=username,
             password=password,
+            profile_dict=profile_dict,
             timeout=timeout,
             banner_timeout=banner_timeout,
             auth_timeout=auth_timeout,
-            on_fallback_log=on_fallback_log,
             on_event=on_event
         )
 
-    # --------------------------------------------------------------------------
-    # Attempt 1: Tier 1 - Modern Fast Path
-    # --------------------------------------------------------------------------
-    sock1 = None
-    transport1 = None
-    tier1_error = None
-    tier1_auth_failed = False
-    stage1 = "tcp_connect"
-
-    try:
-        stage1 = "tcp_connect"
-        _emit_event_safe(on_event, "tcp_connect", "TCP Connection Initiated", f"Opening TCP stream to {hostname}:{port}", "info")
-        sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock1.settimeout(timeout)
-        sock1.connect((hostname, port))
-        _emit_event_safe(on_event, "tcp_established", "TCP Connection Established", f"TCP connection established with {hostname}:{port}", "success")
-
-        stage1 = "ssh_negotiation"
-        transport1 = paramiko.Transport(sock1)
-        apply_security_options_safely(
-            transport1,
-            kex_candidates=TIER1_MODERN_KEX,
-            key_candidates=TIER1_MODERN_KEYS,
-            cipher_candidates=TIER1_MODERN_CIPHERS,
-            mac_candidates=TIER1_MODERN_MACS
-        )
-
-        _emit_event_safe(on_event, "ssh_negotiation", "SSH Negotiation Started", "Starting SSHv2 client transport negotiation", "info")
-        transport1.start_client(timeout=banner_timeout)
-        remote_ident = str(getattr(transport1, "remote_version", "") or "")
-        _emit_event_safe(on_event, "ssh_protocol", "SSH Protocol Exchange", f"Remote SSH Protocol: {remote_ident or 'SSH-2.0'}", "info", {"remote_version": remote_ident})
-        _emit_event_safe(on_event, "key_exchange", "Key Exchange Negotiation", "Agreed on modern KEX parameters", "info")
-        remote_key = transport1.get_remote_server_key()
-        key_name = remote_key.get_name() if remote_key else "unknown"
-        _emit_event_safe(on_event, "host_key_negotiation", "Host Key Negotiation", f"Host key negotiated: {key_name}", "info", {"key_type": key_name})
-
-        # Dynamic MikroTik Detection via SSH banner:
-        if "rosssh" in remote_ident.lower() or "mikrotik" in remote_ident.lower():
-            logger.info(f"[SSH Auto-Discovery] Detected MikroTik RouterOS banner ({remote_ident}) on {hostname}:{port}. Routing to MikroTik SSH Engine.")
-            try:
-                transport1.close()
-            except Exception:
-                pass
-            if sock1:
-                try:
-                    sock1.close()
-                except Exception:
-                    pass
-            return connect_mikrotik_ssh(
-                client,
-                hostname=hostname,
-                port=port,
-                username=username,
-                password=password,
-                timeout=timeout,
-                banner_timeout=banner_timeout,
-                auth_timeout=auth_timeout
-            )
-
-        stage1 = "authentication"
-        _emit_event_safe(on_event, "authentication", "Authentication Attempt", f"Submitting credentials for user '{username}'", "info")
-        auth_ok, auth_err = authenticate_transport(transport1, username=username, password=password)
-
-        if auth_ok:
-            _emit_event_safe(on_event, "authentication_success", "Authentication Successful", f"User '{username}' authenticated successfully", "success")
-            # Succeeded on Tier 1 (Modern Fast Path)!
-            client._transport = transport1
-            client._negotiation_info = extract_negotiation_info(transport1, "tier1_modern")
-            logger.info(
-                f"[SSH Tier 1 Fast Path] Connected to {hostname}:{port} | "
-                f"KEX: {client._negotiation_info['kex']} | "
-                f"Cipher: {client._negotiation_info['cipher']} | "
-                f"Key: {client._negotiation_info['key_type']}"
-            )
+        if ok and transport:
+            # Profile succeeded! Cache it for this host so next time it goes straight to it
+            _HOST_PROFILE_CACHE[hostname] = profile_key
+            logger.info(f"[SSH Profile Chain] SUCCESS on {hostname}:{port} with {profile_dict['name']}. Cached profile for future sessions.")
+            client._transport = transport
+            client._negotiation_info = extract_negotiation_info(transport, profile_dict["tier"])
             return True, None
-        else:
-            tier1_auth_failed = True
-            tier1_error = auth_err or f"Authentication rejected for user '{username}'"
-            _emit_event_safe(on_event, "authentication_failure", "Authentication Failed", tier1_error, "error")
-    except Exception as e:
-        if stage1 == "tcp_connect":
-            tier1_error = f"TCP connection failed to {hostname}:{port}: {e}"
-        elif stage1 == "ssh_negotiation":
-            tier1_error = f"SSH negotiation failed on {hostname}:{port}: {e}"
-        elif stage1 == "authentication":
-            tier1_error = f"SSH authentication error for '{username}' on {hostname}:{port}: {e}"
-        else:
-            tier1_error = str(e).strip() or "Handshake error"
-    finally:
-        if not getattr(client, '_transport', None) or client._transport is not transport1:
-            if transport1:
-                try:
-                    transport1.close()
-                except Exception:
-                    pass
-            if sock1:
-                try:
-                    sock1.close()
-                except Exception:
-                    pass
 
-    # If the modern attempt failed strictly due to invalid credentials, do not retry
-    if tier1_auth_failed:
-        return False, f"Invalid username or password for user '{username}' on {hostname}:{port}"
+        # Record genuine per-profile error
+        err_msg = f"{profile_dict['name']}: {err_classified}"
+        per_profile_errors.append(err_msg)
+        logger.debug(f"[SSH Profile Chain] {err_msg}")
 
-    # If the error is NOT an algorithm/handshake mismatch (e.g. host unreachable, connection refused), do not retry
-    if not is_handshake_or_algo_mismatch(Exception(tier1_error)):
-        return False, tier1_error
+        # If TCP connection failed (host unreachable, port closed, timeout), don't retry other profiles
+        if stage_failed == "tcp_connect":
+            logger.warning(f"[SSH Profile Chain] TCP connection failed to {hostname}:{port} ({err_classified}). Aborting fallback chain.")
+            return False, f"TCP connection failed to {hostname}:{port}: {err_classified}"
 
-    # --------------------------------------------------------------------------
-    # Attempt 2: Tier 2 - Adaptive Legacy Fallback (Cisco 2960 / Catalyst IOS)
-    # --------------------------------------------------------------------------
-    logger.warning(
-        f"[SSH Tier 2 Fallback] Peer {hostname}:{port} rejected modern algorithms ({tier1_error}). "
-        f"Falling back to legacy Cisco algorithms (DH Group 14/1, CBC)..."
-    )
-    if on_fallback_log and callable(on_fallback_log):
-        try:
-            on_fallback_log(f"Negotiating legacy Cisco algorithms with {hostname}:{port}...")
-        except Exception:
-            pass
-
-    sock2 = None
-    transport2 = None
-    tier2_error = None
-    stage2 = "tcp_connect"
-
-    try:
-        stage2 = "tcp_connect"
-        sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock2.settimeout(timeout + 2.0)
-        sock2.connect((hostname, port))
-
-        stage2 = "ssh_negotiation"
-        transport2 = paramiko.Transport(sock2)
-        apply_security_options_safely(
-            transport2,
-            kex_candidates=TIER2_LEGACY_KEX,
-            key_candidates=TIER2_LEGACY_KEYS,
-            cipher_candidates=TIER2_LEGACY_CIPHERS,
-            mac_candidates=TIER2_LEGACY_MACS
-        )
-
-        transport2.start_client(timeout=banner_timeout + 2.0)
-        stage2 = "authentication"
-        auth_ok2, auth_err2 = authenticate_transport(transport2, username=username, password=password)
-
-        if auth_ok2:
-            # Succeeded on Tier 2 (Legacy Fallback)!
-            client._transport = transport2
-            client._negotiation_info = extract_negotiation_info(transport2, "tier2_legacy_fallback")
-            logger.info(
-                f"[SSH Tier 2 Fallback SUCCESS] Connected to {hostname}:{port} | "
-                f"KEX: {client._negotiation_info['kex']} | "
-                f"Cipher: {client._negotiation_info['cipher']} | "
-                f"Key: {client._negotiation_info['key_type']}"
-            )
-            return True, None
-        else:
-            tier2_error = auth_err2 or f"Invalid username or password for user '{username}'"
-    except Exception as e2:
-        if stage2 == "tcp_connect":
-            tier2_error = f"TCP connection failed to {hostname}:{port}: {e2}"
-        elif stage2 == "ssh_negotiation":
-            tier2_error = f"Legacy Cisco SSH key exchange failed on {hostname}:{port}: {e2}"
-        elif stage2 == "authentication":
-            tier2_error = f"SSH authentication error for '{username}' on {hostname}:{port}: {e2}"
-        else:
-            tier2_error = str(e2).strip() or "Legacy handshake failed"
-    finally:
-        if not getattr(client, '_transport', None) or client._transport is not transport2:
-            if transport2:
-                try:
-                    transport2.close()
-                except Exception:
-                    pass
-            if sock2:
-                try:
-                    sock2.close()
-                except Exception:
-                    pass
-
-    return False, tier2_error or tier1_error
+    # All profiles failed - return detailed per-profile error report
+    all_err_summary = "; ".join(per_profile_errors)
+    logger.error(f"[SSH Profile Chain] All profiles failed on {hostname}:{port}: {all_err_summary}")
+    return False, all_err_summary
 
 
 def open_adaptive_shell_channel(
@@ -1390,19 +1491,23 @@ def open_adaptive_shell_channel(
     port: int = 22,
     username: str = "",
     password: str = "",
-    cols: int = 80,
-    rows: int = 24,
-    term_name: str = "xterm-256color",
-    timeout: float = 6.0,
+    cols: int = 200,
+    rows: int = 50,
+    term_name: str = "vt100",
+    timeout: float = 15.0,
     on_status_msg: Optional[Any] = None,
     platform: str = "",
     on_event: Optional[Any] = None
 ) -> Tuple[Optional[Any], Optional[Any], Optional[Any], Dict[str, Any], Optional[str]]:
     """
-    Opens an interactive shell channel using the unified Two-Tier Adaptive SSH Engine:
-    Tier 1: Modern Fast Path (no legacy overhead)
-    Tier 2: Targeted Legacy Fallback (activated if Tier 1 rejects modern KEX/ciphers)
+    Opens an interactive shell channel using the unified multi-profile SSH engine:
+    Profile 1: Modern Fast Path (no legacy overhead)
+    Profile 2: Intermediate (modern + group14-sha1 + CBC + ssh-rsa)
+    Profile 3: Full Legacy Cisco (group14, group-exchange, group1, CBC, 3DES, HMAC-SHA1, ssh-rsa)
     MikroTik: Dedicated ROSSSH compatibility engine (RFC 8332 workaround)
+    
+    Allocates PTY vt100 (200x50), invokes interactive shell, and sends 'terminal length 0'
+    so long outputs are not paged.
     
     Returns:
     (channel, transport, client, negotiation_info, error_message)
@@ -1416,7 +1521,7 @@ def open_adaptive_shell_channel(
     def fallback_cb(msg: str):
         if on_status_msg and callable(on_status_msg):
             on_status_msg(
-                f"\r\n\x1b[33m[SSH Fallback]\x1b[0m {msg}\r\n"
+                f"\r\n\x1b[33m[SSH Profile Chain]\x1b[0m {msg}\r\n"
             )
 
     connected, err = connect_ssh_device(
@@ -1426,8 +1531,8 @@ def open_adaptive_shell_channel(
         username=username,
         password=password,
         timeout=timeout,
-        banner_timeout=timeout,
-        auth_timeout=timeout,
+        banner_timeout=30.0,
+        auth_timeout=30.0,
         on_fallback_log=fallback_cb,
         platform=platform,
         on_event=on_event
@@ -1442,10 +1547,26 @@ def open_adaptive_shell_channel(
     try:
         _emit_event_safe(on_event, "channel_creation", "Channel Creation", "Requesting interactive session channel from device", "info")
         channel = transport.open_session(timeout=timeout)
-        channel.get_pty(term=term_name, width=cols, height=rows)
+        effective_term = term_name or "vt100"
+        channel.get_pty(term=effective_term, width=cols or 200, height=rows or 50)
         channel.invoke_shell()
-        channel.settimeout(0.0)  # Non-blocking for event loops
-        _emit_event_safe(on_event, "shell_creation", "Interactive Shell Created", f"Allocated PTY {term_name} ({cols}x{rows}) and invoked interactive shell", "success", {"term": term_name, "cols": cols, "rows": rows})
+        channel.settimeout(0.0)  # Non-blocking for async select / reader loops
+        _emit_event_safe(
+            on_event,
+            "shell_creation",
+            "Interactive Shell Created",
+            f"Allocated PTY {effective_term} ({cols or 200}x{rows or 50}) and invoked interactive shell",
+            "success",
+            {"term": effective_term, "cols": cols or 200, "rows": rows or 50}
+        )
+
+        # After connecting, send "terminal length 0" so long outputs are not paged
+        try:
+            time.sleep(0.08)
+            channel.send("terminal length 0\r\n")
+        except Exception as e_cmd:
+            logger.debug(f"[Shell] Initial 'terminal length 0' notice: {e_cmd}")
+
         return channel, transport, client, info, None
     except Exception as e:
         _emit_event_safe(on_event, "exception", "Shell Channel Exception", f"Failed to open interactive shell channel: {e}", "error")
@@ -1454,3 +1575,4 @@ def open_adaptive_shell_channel(
         except Exception:
             pass
         return None, None, None, info, f"Failed to open interactive shell channel: {e}"
+

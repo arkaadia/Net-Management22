@@ -162,9 +162,9 @@ class SSHConnectionManager:
                 port=port,
                 username=username,
                 password=password,
-                timeout=6.0,
-                banner_timeout=6.0,
-                auth_timeout=6.0,
+                timeout=15.0,
+                banner_timeout=30.0,
+                auth_timeout=30.0,
                 platform=platform
             )
             if not connected:

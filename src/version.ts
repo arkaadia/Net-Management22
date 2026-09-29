@@ -10,9 +10,30 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.178.0';
+export const APP_VERSION = '1.178.1';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.178.1',
+    releaseDate: '2026-09-29',
+    type: 'patch',
+    title: 'پیاده‌سازی زنجیره ۳ پروفایلی سقوط آزاد الگوریتم‌های SSH و مدیریت دستی Transport برای سیسکو لگاسی',
+    title_en: '3-Profile SSH Fallback Chain, Manual Transport Preferences, and Host Profile Caching for Legacy Cisco',
+    changes: [
+      'پیاده‌سازی زنجیره ۳ مرحله‌ای پروفایل‌های مذاکره (مدرن پیش‌فرض، مدرن با Group14 و CBC، و لگاسی کامل سیسکو با Group14/GEX/Group1 و 3DES)',
+      'تنظیم دستی و صریح ترنسپورت پارامیکو قبل از فراخوانی start_client و فیلترسازی امن متغیرها با جداول داخلی Paramiko',
+      'ذخیره کش پروفایل موفق هر دیوایس برای برقراری اتصال مستقیم و فوق‌سریع در تلاش‌های بعدی',
+      'پشتیبانی دوگانه از احراز هویت پسورد و Keyboard-Interactive به همراه مدیریت بهینه تایم‌اوت‌های سوکت و بنر',
+      'یکپارچه‌سازی مسیر کد اتصال SSH در بخش‌های معرفی دیوایس، همگام‌سازی وضعیت اینترفیس‌ها و ترمینال مستقیم CLI با تنظیم خودکار terminal length 0'
+    ],
+    changes_en: [
+      'Implemented 3-profile fallback chain (modern defaults, modern + Group14-SHA1 + CBC + ssh-rsa, and full legacy Cisco with Group14/GEX/Group1 + 3DES)',
+      'Set manual per-instance Transport preferred algorithms before start_client with safe internal table filtering',
+      'Added in-memory per-host profile caching for instantaneous subsequent connections without retry overhead',
+      'Robust dual-step authentication supporting password and keyboard-interactive with tuned socket and banner timeouts',
+      'Unified single SSH code path across device introduction, interface status sync, and CLI terminal console with automatic terminal length 0 paging disable'
+    ]
+  },
   {
     version: '1.178.0',
     releaseDate: '2026-09-29',
