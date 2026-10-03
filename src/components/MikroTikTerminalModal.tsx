@@ -442,11 +442,14 @@ export const MikroTikTerminalModal: React.FC<MikroTikTerminalModalProps> = ({
 
     // Connect to real hardware via interactive WebSocket streaming with keepalive
     try {
+      const pass = curDev.ssh_password || (curDev.connection as any)?.password || '';
       const wsUrl = getTerminalWebSocketUrl(curDev.id, connProtocol, 'Super Admin', {
         ip: curDev.ip,
         ssh_host: curDev.ssh_host,
         ssh_port: curDev.ssh_port,
         ssh_username: curDev.ssh_username,
+        ssh_password: pass,
+        platform: curDev.platform || 'mikrotik_routeros',
       });
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;

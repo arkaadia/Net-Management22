@@ -10,9 +10,30 @@ export interface ReleaseNote {
   changes_en?: string[];
 }
 
-export const APP_VERSION = '1.180.0';
+export const APP_VERSION = '1.181.0';
 
 export const RELEASE_HISTORY: ReleaseNote[] = [
+  {
+    version: '1.181.0',
+    releaseDate: '2026-10-03',
+    type: 'minor',
+    title: 'موتور بومی و زنده وب‌ترمینال برای اتصال بلادرنگ به تجهیزات شبکه از طریق SSH و Telnet بدون واسطه',
+    title_en: 'Direct Native Live Terminal WebSocket Engine for Real-Time SSH & Telnet Device Connectivity',
+    changes: [
+      'پیاده‌سازی موتور مستقیم و بومی وب‌سوکت در Node.js با استفاده از ssh2 جهت اتصال زنده، بی‌درنگ و بلادرنگ به تجهیزات شبکه جدید و موجود بدون وابستگی به پراکسی یا ماژول‌های ناقص پایتون',
+      'حفظ و انتقال خودکار اطلاعات احراز هویت دیوایس‌های ثبت‌شده جدید (IP، پورت، نام کاربری و رمز عبور) به نشست ترمینال و بازیابی خودکار از فایل موجودی تجهیزات (network_data.json)',
+      'پشتیبانی جامع از مذاکره هوشمند پروتکل (مدرن به همراه بازگشت خودکار به سوئیت‌های الگوریتمی Legacy Cisco مانند Group14/Group1 و 3DES/AES-CBC)',
+      'شفافیت کامل در گزارش خطاهای واقعی تجهیزات (قطع ارتباط، پورت بسته، رد احراز هویت، تایم‌اوت) بدون داده‌های ماک یا شبیه‌سازی‌شده (Strict Zero-Mock Data Policy)',
+      'پشتیبانی یکپارچه از استریم PTY برای سوئیچ‌ها و روترهای سیسکو، تجهیزات میکروتیک و سرورهای لینوکسی'
+    ],
+    changes_en: [
+      'Engineered direct native Node.js SSH2/Telnet WebSocket terminal engine delivering authentic live real-time bidirectional PTY streaming to network hardware without third-party daemon bottlenecks.',
+      'Preserved and forwarded registered device credentials (IP, port, username, password) directly into terminal sessions upon device creation, with persistent inventory lookup in network_data.json.',
+      'Implemented Adaptive Protocol Negotiation with modern algorithms first and automatic legacy Cisco cipher suite fallback (Diffie-Hellman Group1/14, 3DES, AES-CBC).',
+      'Full failure transparency reporting genuine hardware states (connection refused, host unreachable, authentication rejected, timeouts) adhering to Strict Zero-Mock Data Policy.',
+      'Unified live streaming support across Cisco IOS/IOS-XE, MikroTik RouterOS, and Linux server terminals.'
+    ]
+  },
   {
     version: '1.180.0',
     releaseDate: '2026-09-29',

@@ -1047,9 +1047,20 @@ export const AddDeviceModal: React.FC<AddDeviceModalProps> = ({
         setSshTestResult(null);
         setPingTestResult(null);
       } else if (action === 'save_terminal') {
-        const devForTerminal: Device = (created as Device) || {
+        const devForTerminal: Device = {
           ...devicePayload,
-          id: `dev-${Date.now()}`,
+          ...((created as Device) || {}),
+          ssh_password: devicePayload.ssh_password || (created as any)?.ssh_password || '',
+          enable_password: devicePayload.enable_password || (created as any)?.enable_password || '',
+          connection: {
+            ...((created as any)?.connection || {}),
+            protocol: devicePayload.connection_protocol || 'ssh',
+            host: devicePayload.ssh_host || devicePayload.ip || '',
+            port: devicePayload.ssh_port || 22,
+            username: devicePayload.ssh_username || 'admin',
+            password: devicePayload.ssh_password || '',
+          },
+          id: (created as Device)?.id || `dev-${Date.now()}`,
         };
         onClose();
         if (onOpenTerminal) {
